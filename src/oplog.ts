@@ -34,9 +34,13 @@ enum ItemState {
 // This is internal only, and used while reconstructing the changes.
 interface Item {
   lv: LV,
+
   /** The item's state at this point in the merge */
   curState: ItemState,
-  /** The item's state when *EVERYTHING* has been merged. This only uses Inserted and Deleted. */
+
+  /**
+   * The item's state when *EVERYTHING* has been merged. This is always either Inserted or Deleted.
+   */
   endState: ItemState,
 
   // -1 means start / end of document. This is the core list CRDT (via Yjs).
@@ -44,7 +48,7 @@ interface Item {
   originRight: LV | -1,
 }
 
-interface EditContext<T = any> {
+interface EditContext {
   // All the items in document order. This list is grow-only, and will be spliced()
   // in as needed.
   items: Item[],
@@ -57,13 +61,7 @@ interface EditContext<T = any> {
   // This is the same set of items as above, but this time indexed by LV. This is
   // used to make it fast & easy to activate and deactivate items.
   itemsByLV: Item[],
-  
-  // Note even for strings, I'm using an array of (unicode) characters here to make
-  // dealing with unicode easier.
-  dest: T[],
 }
-
-
 
 interface WalkItem {
   retreat: LVRange[],
@@ -183,21 +181,26 @@ const findItemIdx = (ctx: EditContext, needle: LV) => {
 }
 
 /**
- * YjsMod, stolen and adapted from reference-crdts. Returns the inserted endPos.
+ * YjsMod, stolen and adapted from reference-crdts.
+ *
+ * In the case of concurrent inserts, this function finds the correct location in the
+ * item list to insert the item into. The location is passed back to the caller via the
+ * cursor being modified.
  */
-const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, leftIdx: number, rightIdx: number): number => {
+function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, rightIdx: number) {
+  if (cursor.idx === rightIdx) return // If there's no concurrency, we don't need to scan.
+
+  // Sometimes we need to scan ahead and maybe insert there, or maybe insert here.
   let scanning = false
-
-  let destIdx = 0
-  let destEndPos = 0
-
   let scanIdx = cursor.idx
   let scanEndPos = cursor.endPos
 
+  const leftIdx = cursor.idx - 1
+
   for (; ; scanIdx++) {
     if (!scanning) {
-      destIdx = scanIdx
-      destEndPos = scanEndPos
+      cursor.idx = scanIdx
+      cursor.endPos = scanEndPos
     }
 
     if (scanIdx === ctx.items.length) break // We've reached the end of the document. Insert.
@@ -241,12 +244,10 @@ const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, ne
     }
   }
 
-  // We've found the position. Insert here.
-  ctx.items.splice(destIdx, 0, newItem)
-  return destEndPos
+  // We've found the position. Insert where the cursor points.
 }
 
-function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
+function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
   if (lv % 10000 === 0) console.log(lv, '...')
 
   // This integrates the op into the document. This code is copied from reference-crdts.
@@ -271,7 +272,7 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
 
     // Delete it in the output.
     if (item.endState === ItemState.Inserted) {
-      ctx.dest.splice(cursor.endPos, 1)
+      dest.splice(cursor.endPos, 1)
     }
 
     // And mark the item as deleted. For the curState, we can't get into a "double deletes"
@@ -314,11 +315,13 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
     }
     ctx.itemsByLV[lv] = newItem
 
-    // This will insert the new item into ctx.items and return the endPos.
-    const endPos = integrateYjsMod(ctx, oplog.cg, newItem, cursor, cursor.idx - 1, rightIdx)
+    // This will update the cursor to find the location we want to insert the item.
+    integrateYjsMod(ctx, oplog.cg, newItem, cursor, rightIdx)
+
+    ctx.items.splice(cursor.idx, 0, newItem)
 
     // And finally, actually insert it in the resulting document.
-    ctx.dest.splice(endPos, 0, op.content!)
+    dest.splice(cursor.endPos, 0, op.content!)
   }
 }
 
@@ -327,8 +330,10 @@ function mergeString(oplog: ListOpLog<string>): string {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
     itemsByLV: new Array(oplog.ops.length).fill(null),
-    dest: [],
   }
+
+  // An array of single unicode characters.
+  const dest: string[] = []
 
   for (const {retreat, advance, consume} of walkCG(oplog.cg)) {
     // Retreat.
@@ -353,11 +358,11 @@ function mergeString(oplog: ListOpLog<string>): string {
     const [start, end] = consume
     for (let lv = start; lv < end; lv++) {
       // console.log('apply1', lv, oplog.ops[lv].type)
-      apply1(ctx, oplog, lv)
+      apply1(ctx, dest, oplog, lv)
     }
   }
 
-  return ctx.dest.join('')
+  return dest.join('')
 }
 
 
@@ -424,9 +429,11 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
   //   console.log('w', w)
   // }
 
+  const start = Date.now()
   const result = mergeString(oplog)
+  const end = Date.now()
   fs.writeFileSync('out.txt', result)
-  console.log('Wrote output to out.txt')
+  console.log('Wrote output to out.txt. Took', end - start, 'ms')
   // console.log('result', result)
 })()
 

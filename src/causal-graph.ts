@@ -1,12 +1,21 @@
-// The causal graph puts a bunch of edits (each at some [agent, seq] version
-// pair) into a list.
+// This is a helper library for storing & interacting with a run-length encoded causal graph
+// (join semilattice) of changes.
+//
+// All changes can be referenced as either a [agent, seq] pair or as a "local version" (essentially
+// a local, autoincremented ID per known version).
+//
+// The causal graph only stores a set of known versions and each version's parent version.
+// The operations themselves are not stored here.
+//
+// The versions are is stored in runs, and run-length encoded. Compression depends
+// on concurrency. (High concurrency = bad compression. Low concurrency = great compression).
 
 import PriorityQueue from 'priorityqueuejs'
 import bs from 'binary-search'
-// import {AtLeast1, LV, LVRange, Primitive, RawVersion, ROOT, ROOT_LV, VersionSummary} from './types.js'
 import {LV, LVRange, Pair, RawVersion, ROOT, ROOT_LV, VersionSummary} from './types.js'
-import { pushRLEList, tryRangeAppend, tryRevRangeAppend } from './rle.js'
-import {max2, min2} from './utils.js'
+
+const min2 = (a: number, b: number) => a < b ? a : b
+const max2 = (a: number, b: number) => a > b ? a : b
 
 type CGEntry = {
   version: LV,
@@ -41,6 +50,27 @@ export const createCG = (): CausalGraph => ({
   entries: [],
   agentToVersion: {},
 })
+
+const pushRLEList = <T>(list: T[], newItem: T, tryAppend: (a: T, b: T) => boolean) => {
+  if (list.length > 0) {
+    if (tryAppend(list[list.length - 1], newItem)) return
+  }
+  list.push(newItem)
+}
+
+const tryRangeAppend = (r1: LVRange, r2: LVRange): boolean => {
+  if (r1[1] === r2[0]) {
+    r1[1] = r2[1]
+    return true
+  } else return false
+}
+
+const tryRevRangeAppend = (r1: LVRange, r2: LVRange): boolean => {
+  if (r1[0] === r2[1]) {
+    r1[0] = r2[0]
+    return true
+  } else return false
+}
 
 /** Sort in ascending order. */
 const sortVersions = (v: LV[]): LV[] => v.sort((a, b) => a - b)
@@ -788,281 +818,3 @@ export const compareVersions = (cg: CausalGraph, a: LV, b: LV): number => {
   }
   throw new Error('a and b are equal')
 }
-
-
-
-// type SerializedCGEntryV1 = [
-//   version: LV,
-//   vEnd: LV,
-
-//   agent: string,
-//   seq: number, // Seq for version.
-
-//   parents: LV[] // Parents for version
-// ]
-
-// export interface SerializedCausalGraphV1 {
-//   /** TODO: Should probably just recompute the heads on load */
-//   heads: LV[],
-//   entries: SerializedCGEntryV1[],
-// }
-
-
-// export function serialize(cg: CausalGraph): SerializedCausalGraphV1 {
-//   return {
-//     heads: cg.heads,
-//     entries: cg.entries.map(e => ([
-//       e.version, e.vEnd, e.agent, e.seq, e.parents
-//     ]))
-//   }
-// }
-
-// export function fromSerialized(data: SerializedCausalGraphV1): CausalGraph {
-//   const cg: CausalGraph = {
-//     heads: data.heads,
-//     entries: data.entries.map(e => ({
-//       version: e[0], vEnd: e[1], agent: e[2], seq: e[3], parents: e[4]
-//     })),
-//     agentToVersion: {}
-//   }
-
-//   for (const e of cg.entries) {
-//     const len = e.vEnd - e.version
-//     pushRLEList(clientEntriesForAgent(cg, e.agent), {
-//       seq: e.seq, seqEnd: e.seq + len, version: e.version
-//     }, tryAppendClientEntry)
-//   }
-
-//   return cg
-// }
-
-
-// This is identical to CGEntry above, but reproduced to pin it.
-type SerializedCGEntryV2 = {
-  version: LV, // TODO: Remove version here - this is redundant.
-  vEnd: LV,
-
-  agent: string,
-  seq: number, // Seq for version.
-
-  parents: LV[] // Parents for version
-}
-
-export interface SerializedCausalGraphV1 {
-  /** TODO: Should probably just recompute the heads on load */
-  heads: LV[],
-  entries: SerializedCGEntryV2[],
-}
-
-
-export function serialize(cg: CausalGraph): SerializedCausalGraphV1 {
-  return {
-    heads: cg.heads,
-    entries: cg.entries,
-  }
-}
-
-export function fromSerialized(data: SerializedCausalGraphV1): CausalGraph {
-  const cg: CausalGraph = {
-    heads: data.heads,
-    entries: data.entries,
-    agentToVersion: {}
-  }
-
-  for (const e of cg.entries) {
-    const len = e.vEnd - e.version
-    pushRLEList(clientEntriesForAgent(cg, e.agent), {
-      seq: e.seq, seqEnd: e.seq + len, version: e.version
-    }, tryAppendClientEntry)
-  }
-
-  return cg
-}
-
-
-// type PartialSerializedCGEntryV1 = [
-//   agent: string,
-//   seq: number,
-//   len: number,
-
-//   parents: RawVersion[]
-// ]
-type PartialSerializedCGEntryV2 = {
-  agent: string,
-  seq: number,
-  len: number,
-
-  parents: RawVersion[]
-}
-
-export type PartialSerializedCGV2 = PartialSerializedCGEntryV2[]
-
-/**
- * The entries returned from this function are in the order of versions
- * specified in ranges.
- */
-export function serializeDiff(cg: CausalGraph, ranges: LVRange[]): PartialSerializedCGV2 {
-  const entries: PartialSerializedCGEntryV2[] = []
-  for (let [start, end] of ranges) {
-    while (start != end) {
-      const [e, offset] = findEntryContaining(cg, start)
-
-      const localEnd = min2(end, e.vEnd)
-      const len = localEnd - start
-      const parents: RawVersion[] = offset === 0
-        ? lvToRawList(cg, e.parents)
-        : [[e.agent, e.seq + offset - 1]]
-
-      entries.push({
-        agent: e.agent,
-        seq: e.seq + offset,
-        len,
-        parents
-      })
-
-      start += len
-    }
-  }
-
-  return entries
-}
-
-//! The entries returned from this function are always in causal order.
-export function serializeFromVersion(cg: CausalGraph, v: LV[]): PartialSerializedCGV2 {
-  const ranges = diff(cg, v, cg.heads).bOnly
-  return serializeDiff(cg, ranges)
-}
-
-export function mergePartialVersions(cg: CausalGraph, data: PartialSerializedCGV2): LVRange {
-  const start = nextLV(cg)
-
-  for (const {agent, seq, len, parents} of data) {
-    addRaw(cg, [agent, seq], len, parents)
-  }
-  return [start, nextLV(cg)]
-}
-
-export function *mergePartialVersions2(cg: CausalGraph, data: PartialSerializedCGV2) {
-  // const start = nextLV(cg)
-
-  for (const {agent, seq, len, parents} of data) {
-    const newEntry = addRaw(cg, [agent, seq], len, parents)
-    if (newEntry != null) yield newEntry
-  }
-
-  // return [start, nextLV(cg)]
-}
-
-export function advanceVersionFromSerialized(cg: CausalGraph, data: PartialSerializedCGV2, version: LV[]): LV[] {
-  for (const {agent, seq, len, parents} of data) {
-    const parentLVs = rawToLVList(cg, parents)
-    const vLast = rawToLV(cg, agent, seq + len - 1)
-    version = advanceFrontier(version, vLast, parentLVs)
-  }
-
-  // NOTE: Callers might need to call findDominators on the result.
-  return version
-}
-
-/** I'm sending a lot of CG delta offsets instead of RawVersions because they're smaller
- * (though using schemaboi the difference is probably pretty minimal). This code lets us
- * convert from offsets back to LVs. First the CG diff is "enhanced" to contain offsets
- * in each entry. Then we can use binary search to find the entry containing a specific
- * offset and convert it to a native LV.
- */
-export type EnhancedPartialSerializedCG = (PartialSerializedCGEntryV2 & {offset: number})[]
-
-export function enhanceCGDiff(diff: PartialSerializedCGV2): EnhancedPartialSerializedCG {
-  let offset = 0
-  for (const e of diff) {
-    let ee: PartialSerializedCGEntryV2 & {offset?: number} = e
-    ee.offset = offset
-    offset += ee.len
-  }
-  return diff as EnhancedPartialSerializedCG
-}
-
-export function diffOffsetToLV(cg: CausalGraph, diff: EnhancedPartialSerializedCG, offset: number): LV {
-  let idx = bs(diff, offset, (entry, needle) => (
-    needle < entry.offset ? 1
-    : needle >= (entry.offset + entry.len) ? -1
-    : 0
-  ))
-  if (idx < 0) idx = -idx - 1 // Start at the next entry.
-  if (idx >= diff.length) throw Error('Invalid offset - past end of diff')
-
-  const e = diff[idx]
-  if (offset < e.offset || offset >= (e.offset + e.len)) throw Error('Invalid state - offset not found in entry')
-
-  return rawToLV(cg, e.agent, e.seq + (offset - e.offset))
-}
-
-export function diffOffsetToMaybeLV(cg: CausalGraph, oldNextLV: LV, diff: EnhancedPartialSerializedCG, offset: number): LV {
-  const lv = diffOffsetToLV(cg, diff, offset)
-  return lv < oldNextLV ? -1 : lv
-}
-
-
-// ;(() => {
-//   const cg1 = create()
-//   const agent1 = createAgent('a')
-//   const agent2 = createAgent('b')
-//   addRaw(cg1, agent1(), 5)
-//   const s1 = serializeFromVersion(cg1, [])
-//   addRaw(cg1, agent2(), 10)
-//   const s2 = serializeFromVersion(cg1, [])
-//   console.dir(s2, {depth: null})
-
-//   const cg2 = create()
-//   mergePartialVersions(cg2, s1)
-//   mergePartialVersions(cg2, s2)
-//   // mergePartialVersions(cg2, s)
-
-//   // console.dir(cg2, {depth: null})
-// })()
-
-// ;(() => {
-//   const cg1 = create()
-//   const agent1 = createAgent('a')
-//   addRaw(cg1, agent1(), 5)
-//   add(cg1, 'b', 0, 10, [2])
-
-//   // [3, 9]
-//   console.log(findDominators2(cg1, [0, 1, 2, 3, 5, 9], (v, i) => console.log(v, i)))
-// })()
-
-
-// ;(() => {
-//   const cg = create()
-
-//   add(cg, 'a', 0, 5)
-//   add(cg, 'b', 0, 10, [2])
-//   add(cg, 'a', 5, 10, [4, 14])
-
-//   console.dir(cg, {depth:null})
-
-//   const summary: VersionSummary = {
-//     a: [[0, 6]],
-//     b: [[0, 100]],
-//   }
-//   intersectWithSummaryFull(cg, summary, (agent, start, end, v) => {
-//     console.log(agent, start, end, v)
-//   })
-
-//   // [15]
-//   console.dir(intersectWithSummary(cg, summary), {depth: null})
-// })()
-
-// ;(() => {
-//   const cg = create()
-
-//   add(cg, 'a', 0, 5, [])
-//   add(cg, 'b', 0, 10, [2])
-//   add(cg, 'a', 5, 10, [4, 14])
-
-//   console.log(findDominators2(cg, [2, 1], (lv, isDom) => {
-//     console.log(lv, isDom)
-//   }))
-
-//   // console.log(compareVersions(cg, 1, 2))
-// })()

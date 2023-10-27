@@ -1,8 +1,5 @@
 import { RawVersion } from "./types.js"
 
-export const min2 = (a: number, b: number) => a < b ? a : b
-export const max2 = (a: number, b: number) => a > b ? a : b
-
 export type AgentVersion = RawVersion
 export const createRandomId = (): string => Math.random().toString(36).slice(2)
 // export function createAgent(): AgentVersion {

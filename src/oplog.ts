@@ -25,13 +25,14 @@ export interface ListOpLog<T = any> {
 }
 
 
-const enum ItemState {
+enum ItemState {
   NotYetInserted = -1,
   Inserted = 0,
   Deleted = 1, // Or some +ive number of times the item has been deleted.
 }
 
-interface CRDTListItem {
+// This is internal only, and used while reconstructing the changes.
+interface Item {
   lv: LV,
   /** The item's state at this point in the merge */
   curState: ItemState,
@@ -44,7 +45,7 @@ interface CRDTListItem {
 }
 
 interface EditContext<T = any> {
-  items: CRDTListItem[],
+  items: Item[],
 
   // delTarget[del_lv] = target_lv.
   delTargets: LV[],
@@ -150,10 +151,6 @@ function retreat1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
 const itemWidth = (state: ItemState): number => state === ItemState.Inserted ? 1 : 0
 
 function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
-  // for (let i = 0; i < ctx.items.length; i++) {
-  //   if (ctx.items.
-  // }
-
   let curPos = 0
   let endPos = 0
   let i = 0
@@ -180,11 +177,7 @@ const findItemIdx = (ctx: EditContext, needle: LV) => {
 /**
  * YjsMod, stolen and adapted from reference-crdts. Returns the inserted endPos.
  */
-const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, newItem: CRDTListItem, cursor: DocCursor, left: number, right: number): number => {
-  // let left = findItem(doc, newItem.originLeft, idx_hint - 1)
-  // let destIdx = left + 1
-
-  // let right = newItem.originRight == null ? doc.content.length : findItem(doc, newItem.originRight, idx_hint)
+const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, left: number, right: number): number => {
   let scanning = false
 
   let destIdx = 0
@@ -302,7 +295,7 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
       }
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
 
-    const newItem: CRDTListItem = {
+    const newItem: Item = {
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
       lv,

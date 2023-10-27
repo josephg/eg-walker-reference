@@ -5,8 +5,9 @@
 import * as fs from 'node:fs'
 import * as causalGraph from "./causal-graph.js";
 import { LV, LVRange } from "./types.js";
-import { assert } from './utils.js';
+// import { assert } from './utils.js';
 import { mergeString } from './merge.js';
+import assert from 'node:assert/strict'
 
 export const enum ListOpType {
   Ins = 0,
@@ -39,7 +40,7 @@ interface DTOpLogItem {
   ops: [pos: number, del: number, insContent: string][],
 }
 
-function importOpLog(items: DTOpLogItem[]): ListOpLog {
+function importOpLogOld(items: DTOpLogItem[]): ListOpLog {
   const ops: ListOp[] = []
   const cg = causalGraph.createCG()
 
@@ -77,12 +78,79 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
   return {ops, cg}
 }
 
+interface ConcurrentTrace {
+  kind: 'concurrent',
+  endContent: string,
+  numAgents: number,
+  txns: ConcurrentTraceTxn[],
+}
+
+interface ConcurrentTraceTxn {
+  // These are indexes of other Txn objects in the parent's txn list.
+  parents: number[],
+  numChildren: number,
+  // In these traces, the agents are simply numbers (0, 1, 2, etc).
+  agent: number,
+  patches: [pos: number, del: number, insContent: string][],
+}
+
+function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
+  if (trace.kind !== 'concurrent') throw Error('Invalid data - not a concurrent editing trace')
+
+  const ops: ListOp[] = []
+  const cg = causalGraph.createCG()
+
+  const nextSeqForAgent: number[] = new Array(trace.numAgents).fill(0)
+  const lastLVOfTxn: LV[] = [] // txn index -> last version.
+
+  let nextLV = 0
+  for (let i = 0; i < trace.txns.length; i++) {
+    const txn = trace.txns[i]
+
+    const parents = txn.parents.map(idx => lastLVOfTxn[idx])
+    const seqStart = nextSeqForAgent[txn.agent]
+    // The "length" of the transaction. Every delete and insert counts for 1.
+    const len = txn.patches.reduce((prev, [_pos, delHere, insContent]) => {
+      return prev + delHere + [...insContent].length
+    }, 0)
+    const seqEnd = seqStart + len
+    nextSeqForAgent[txn.agent] = seqEnd
+
+    causalGraph.add(cg, `${txn.agent}`, seqStart, seqEnd, parents)
+
+    // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
+    for (let [pos, delHere, insContent] of txn.patches) {
+      // console.log(pos, delHere, insContent)
+      if ((delHere > 0) === (insContent !== '')) throw Error('Patches must always be an insert or delete')
+
+      if (delHere > 0) {
+        for (let i = 0; i < delHere; i++) {
+          // The deletes all happen at the same position.
+          ops.push({type: ListOpType.Del, pos})
+        }
+      } else {
+        for (const c of insContent) {
+          ops.push({type: ListOpType.Ins, pos, content: c})
+          pos++
+        }
+      }
+    }
+
+    nextLV += len
+    lastLVOfTxn[i] = nextLV - 1
+  }
+
+  return {ops, cg}
+}
+
 
 ;(() => {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
-  // const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
-  const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
-  const oplog = importOpLog(data)
+  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
+  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
+  const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
+  const oplog = importFromConcurrentTrace(data)
+
   // console.log(oplog.cg)
 
   // for (const w of walkCG(cg)) {
@@ -90,9 +158,13 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
   // }
 
   const start = Date.now()
-  const result = mergeString(oplog)
+  let result = ''
+  for (let i = 0; i < 1; i++) result = mergeString(oplog)
   const end = Date.now()
   fs.writeFileSync('out.txt', result)
+
+  assert.equal(result, data.endContent)
+
   console.log('Wrote output to out.txt. Took', end - start, 'ms')
   // console.log('result', result)
 })()

@@ -126,9 +126,10 @@ function advance1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
   const item = ctx.itemsByLV[targetLV]
 
   if (op.type === ListOpType.Del) {
-    assert(item.curState === ItemState.Inserted, 'Invalid state - adv Del but item is not Ins')
+    assert(item.curState >= ItemState.Inserted, 'Invalid state - adv Del but item is ' + item.curState)
     assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
-    item.curState = ItemState.Deleted
+    // item.curState = ItemState.Deleted
+    item.curState++
   } else {
     // Mark the item as inserted.
     assert(item.curState === ItemState.NotYetInserted, 'Advance insert for already inserted item')
@@ -227,7 +228,7 @@ const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, ne
         continue
       } else if (oright === right) {
         // Raw conflict. Order based on user agents.
-        if (causalGraph.lvCmp(cg, newItem.lv, other.lv) < 0) {
+        if (causalGraph.lvCmp(cg, newItem.lv, other.lv) > 0) {
           break
         } else {
           scanning = false
@@ -249,6 +250,8 @@ const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, ne
 }
 
 function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
+  if (lv % 10000 === 0) console.log(lv, '...')
+
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[lv]
 
@@ -415,8 +418,8 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
 
 ;(() => {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
-  // const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
-  const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
+  const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
+  // const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
   const oplog = importOpLog(data)
   // console.log(oplog.cg)
 

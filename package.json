@@ -1,0 +1,21 @@
+{
+  "name": "diamond-types",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "mocha"
+  },
+  "dependencies": {
+    "@types/node": "^20.8.9",
+    "binary-search": "^1.3.6",
+    "map2": "^1.1.2",
+    "mocha": "^10.0.0",
+    "priorityqueuejs": "^2.0.0",
+    "typescript": "^4.7.4"
+  },
+  "devDependencies": {
+    "@types/priorityqueuejs": "^1.0.3"
+  }
+}

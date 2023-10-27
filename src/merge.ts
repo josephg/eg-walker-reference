@@ -1,7 +1,6 @@
 // This file contains the code to find the final document state based on an oplog.
 import * as causalGraph from "./causal-graph.js"
 import { ListOpLog, ListOpType } from "./oplog.js"
-import { LV, LVRange } from "./types.js"
 import { assert } from './utils.js'
 
 enum ItemState {
@@ -12,9 +11,14 @@ enum ItemState {
 
 // This is internal only, and used while reconstructing the changes.
 interface Item {
-  lv: LV,
+  opId: number,
 
-  /** The item's state at this point in the merge */
+  /**
+   * The item's state at this point in the merge. This is initially set to Inserted,
+   * but if we reverse the operation out we'll end up in NotYetInserted. And if the item
+   * is deleted multiple times (by multiple concurrent users), we'll end up storing the
+   * number of times the item was deleted here.
+   */
   curState: ItemState,
 
   /**
@@ -23,8 +27,8 @@ interface Item {
   endState: ItemState,
 
   // -1 means start / end of document. This is the core list CRDT (via Yjs).
-  originLeft: LV | -1,
-  originRight: LV | -1,
+  originLeft: number | -1,
+  originRight: number | -1,
 }
 
 interface EditContext {
@@ -35,7 +39,7 @@ interface EditContext {
   // When we delete something, we store the LV of the item that was deleted. This is
   // used when items are un-deleted (and re-deleted).
   // delTarget[del_lv] = target_lv.
-  delTargets: LV[],
+  delTargets: number[],
 
   // This is the same set of items as above, but this time indexed by LV. This is
   // used to make it fast & easy to activate and deactivate items.
@@ -43,14 +47,18 @@ interface EditContext {
 }
 
 interface WalkItem {
-  retreat: LVRange[],
-  advance: LVRange[],
-  consume: LVRange,
+  // These ranges are half-open ranges of opIds. So they include the start, but not the end.
+  retreat: [number, number][],
+  advance: [number, number][],
+  consume: [number, number],
 }
 
 /**
  * This essentially does a depth-first traversal of the causal graph to generate
  * our plan for how to apply all the operations.
+ *
+ * This is a naive traversal. Pathological cases may significantly slow down processing.
+ * But its simple and correct.
  */
 function *walkCG(cg: causalGraph.CausalGraph): Generator<WalkItem> {
   // Our current location.
@@ -88,14 +96,14 @@ interface DocCursor {
   endPos: number,
 }
 
-function advance1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
-  const op = oplog.ops[lv]
+function advance1(ctx: EditContext, oplog: ListOpLog<string>, opId: number) {
+  const op = oplog.ops[opId]
   // const cursor = findByLV(ctx, lv)
   // const item = ctx.items[cursor.idx]
 
   // For inserts, the item being reactivated is just the op itself. For deletes,
   // we need to look up the item in delTargets.
-  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[lv] : lv
+  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[opId] : opId
   // const item = ctx.items.find(i => i.lv === targetLV)!
   const item = ctx.itemsByLV[targetLV]
 
@@ -112,11 +120,11 @@ function advance1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
   }
 }
 
-function retreat1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
-  const op = oplog.ops[lv]
+function retreat1(ctx: EditContext, oplog: ListOpLog<string>, opId: number) {
+  const op = oplog.ops[opId]
   // const cursor = findByLV(ctx, lv)
   // const item = ctx.items[cursor.idx]
-  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[lv] : lv
+  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[opId] : opId
   // const item = ctx.items.find(i => i.lv === targetLV)!
   const item = ctx.itemsByLV[targetLV]
 
@@ -153,8 +161,8 @@ function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
   return { idx: i, endPos }
 }
 
-const findItemIdx = (ctx: EditContext, needle: LV) => {
-  const idx = ctx.items.findIndex(i => i.lv === needle)
+const findItemIdx = (ctx: EditContext, needle: number) => {
+  const idx = ctx.items.findIndex(i => i.opId === needle)
   if (idx === -1) throw Error('Could not find needle in items')
   return idx
 }
@@ -185,7 +193,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
     if (scanIdx === ctx.items.length) break // We've reached the end of the document. Insert.
 
     let other = ctx.items[scanIdx]
-    if (other.lv === newItem.originRight) break // End of the concurrent range. Insert.
+    if (other.opId === newItem.originRight) break // End of the concurrent range. Insert.
 
     // The index of the origin left / right for the other item.
     let oleftIdx = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
@@ -207,7 +215,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
         continue
       } else if (orightIdx === rightIdx) {
         // Raw conflict. Order based on user agents.
-        if (causalGraph.lvCmp(cg, newItem.lv, other.lv) > 0) {
+        if (causalGraph.lvCmp(cg, newItem.opId, other.opId) > 0) {
           break
         } else {
           scanning = false
@@ -226,11 +234,11 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
   // We've found the position. Insert where the cursor points.
 }
 
-function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
-  if (lv % 10000 === 0) console.log(lv, '...')
+function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: number) {
+  if (opId % 10000 === 0) console.log(opId, '...')
 
   // This integrates the op into the document. This code is copied from reference-crdts.
-  const op = oplog.ops[lv]
+  const op = oplog.ops[opId]
 
   if (op.type === ListOpType.Del) {
     // This is simple. We just need to mark the item as deleted and delete it from the output.
@@ -260,7 +268,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
     item.curState = item.endState = ItemState.Deleted
 
     // And mark that this delete corresponds to *that* item.
-    ctx.delTargets[lv] = item.lv
+    ctx.delTargets[opId] = item.opId
   } else {
     // Insert! This is much more complicated as we need to do the Yjs integration.
     const cursor = findByCurPos(ctx, op.pos)
@@ -272,7 +280,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
     }
 
     // Anyway, originLeft is just the LV of the item to our left.
-    const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].lv
+    const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].opId
 
     // originRight is the ID of the next item which isn't in the NYI curState.
     let originRight = -1
@@ -280,7 +288,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
     for (; rightIdx < ctx.items.length; rightIdx++) {
       const nextItem = ctx.items[rightIdx]
       if (nextItem.curState !== ItemState.NotYetInserted) {
-        originRight = nextItem.lv
+        originRight = nextItem.opId
         break
       }
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
@@ -288,11 +296,11 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, lv: LV) {
     const newItem: Item = {
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
-      lv,
+      opId: opId,
       originLeft,
       originRight
     }
-    ctx.itemsByLV[lv] = newItem
+    ctx.itemsByLV[opId] = newItem
 
     // This will update the cursor to find the location we want to insert the item.
     integrateYjsMod(ctx, oplog.cg, newItem, cursor, rightIdx)

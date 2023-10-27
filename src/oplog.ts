@@ -39,16 +39,24 @@ interface Item {
   /** The item's state when *EVERYTHING* has been merged */
   endState: ItemState,
 
-  // -1 means start / end of document.
+  // -1 means start / end of document. This is the core list CRDT (via Yjs).
   originLeft: LV | -1,
   originRight: LV | -1,
 }
 
 interface EditContext<T = any> {
+  // All the items in document order. This list is grow-only, and will be spliced()
+  // in as needed.
   items: Item[],
 
+  // When we delete something, we store the LV of the item that was deleted. This is
+  // used when items are un-deleted (and re-deleted).
   // delTarget[del_lv] = target_lv.
   delTargets: LV[],
+
+  // This is the same set of items as above, but this time indexed by LV. This is
+  // used to make it fast & easy to activate and deactivate items.
+  itemsByLV: Item[],
 
   // dest: string | any[],
 
@@ -114,7 +122,8 @@ function advance1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
   // For inserts, the item being reactivated is just the op itself. For deletes,
   // we need to look up the item in delTargets.
   const targetLV = op.type === ListOpType.Del ? ctx.delTargets[lv] : lv
-  const item = ctx.items.find(i => i.lv === targetLV)!
+  // const item = ctx.items.find(i => i.lv === targetLV)!
+  const item = ctx.itemsByLV[targetLV]
 
   if (op.type === ListOpType.Del) {
     assert(item.curState === ItemState.Inserted, 'Invalid state - adv Del but item is not Ins')
@@ -133,7 +142,8 @@ function retreat1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
   // const cursor = findByLV(ctx, lv)
   // const item = ctx.items[cursor.idx]
   const targetLV = op.type === ListOpType.Del ? ctx.delTargets[lv] : lv
-  const item = ctx.items.find(i => i.lv === targetLV)!
+  // const item = ctx.items.find(i => i.lv === targetLV)!
+  const item = ctx.itemsByLV[targetLV]
 
   if (op.type === ListOpType.Del) {
     // Undelete the item.
@@ -302,6 +312,7 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
       originLeft,
       originRight
     }
+    ctx.itemsByLV[lv] = newItem
 
     // This will insert the new item into ctx.items and return the endPos.
     const endPos = integrateYjsMod(ctx, oplog.cg, newItem, cursor, cursor.idx - 1, rightIdx)
@@ -315,6 +326,7 @@ function mergeString(oplog: ListOpLog<string>): string {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
+    itemsByLV: new Array(oplog.ops.length).fill(null),
     dest: [],
   }
 
@@ -350,7 +362,9 @@ function mergeString(oplog: ListOpLog<string>): string {
 
 
 
-// This comes from the `dt export` command.
+// This code is for testing the algorithm.
+
+// This is the data format output from the `dt export` command.
 interface DTOpLogItem {
   agent: string,
   // LV.
@@ -395,15 +409,13 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
     }
   }
 
-  // console.log('cg', cg)
-  // console.log('ops', ops)
-
   return {ops, cg}
 }
 
 
 ;(() => {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
+  // const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
   const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
   const oplog = importOpLog(data)
   // console.log(oplog.cg)
@@ -417,3 +429,4 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
   console.log('Wrote output to out.txt')
   // console.log('result', result)
 })()
+

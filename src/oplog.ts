@@ -36,7 +36,7 @@ interface Item {
   lv: LV,
   /** The item's state at this point in the merge */
   curState: ItemState,
-  /** The item's state when *EVERYTHING* has been merged */
+  /** The item's state when *EVERYTHING* has been merged. This only uses Inserted and Deleted. */
   endState: ItemState,
 
   // -1 means start / end of document. This is the core list CRDT (via Yjs).
@@ -57,9 +57,7 @@ interface EditContext<T = any> {
   // This is the same set of items as above, but this time indexed by LV. This is
   // used to make it fast & easy to activate and deactivate items.
   itemsByLV: Item[],
-
-  // dest: string | any[],
-
+  
   // Note even for strings, I'm using an array of (unicode) characters here to make
   // dealing with unicode easier.
   dest: T[],
@@ -110,7 +108,6 @@ function *walkCG(cg: causalGraph.CausalGraph): Generator<WalkItem> {
 
 interface DocCursor {
   idx: number,
-  curPos: number,
   endPos: number,
 }
 
@@ -176,7 +173,7 @@ function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
     i++
   }
 
-  return { idx: i, curPos, endPos }
+  return { idx: i, endPos }
 }
 
 const findItemIdx = (ctx: EditContext, needle: LV) => {
@@ -188,7 +185,7 @@ const findItemIdx = (ctx: EditContext, needle: LV) => {
 /**
  * YjsMod, stolen and adapted from reference-crdts. Returns the inserted endPos.
  */
-const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, left: number, right: number): number => {
+const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, leftIdx: number, rightIdx: number): number => {
   let scanning = false
 
   let destIdx = 0
@@ -205,28 +202,28 @@ const integrateYjsMod = <T>(ctx: EditContext<T>, cg: causalGraph.CausalGraph, ne
 
     if (scanIdx === ctx.items.length) break // We've reached the end of the document. Insert.
 
-    // let other = doc.content[i]
     let other = ctx.items[scanIdx]
     if (other.lv === newItem.originRight) break // End of the concurrent range. Insert.
 
-    let oleft = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
-    let oright = other.originRight === -1 ? ctx.items.length : findItemIdx(ctx, other.originRight)
+    // The index of the origin left / right for the other item.
+    let oleftIdx = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
+    let orightIdx = other.originRight === -1 ? ctx.items.length : findItemIdx(ctx, other.originRight)
 
     // The logic below summarizes to:
     // if (oleft < left || (oleft === left && oright === right && newItem.id[0] < o.id[0])) break
     // if (oleft === left) scanning = oright < right
 
     // Ok now we implement the punnet square of behaviour
-    if (oleft < left) {
+    if (oleftIdx < leftIdx) {
       // Top row. Insert, insert, arbitrary (insert)
       break
-    } else if (oleft === left) {
+    } else if (oleftIdx === leftIdx) {
       // Middle row.
-      if (oright < right) {
+      if (orightIdx < rightIdx) {
         // This is tricky. We're looking at an item we *might* insert after - but we can't tell yet!
         scanning = true
         continue
-      } else if (oright === right) {
+      } else if (orightIdx === rightIdx) {
         // Raw conflict. Order based on user agents.
         if (causalGraph.lvCmp(cg, newItem.lv, other.lv) > 0) {
           break
@@ -263,7 +260,6 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
     // the data is invalid or we've messed something up somewhere.
     while (ctx.items[cursor.idx].curState !== ItemState.Inserted) {
       const item = ctx.items[cursor.idx]
-      cursor.curPos += itemWidth(item.curState)
       cursor.endPos += itemWidth(item.endState)
       cursor.idx++
     }
@@ -278,9 +274,10 @@ function apply1(ctx: EditContext, oplog: ListOpLog<string>, lv: LV) {
       ctx.dest.splice(cursor.endPos, 1)
     }
 
-    // And mark the item as deleted.
-    item.curState++ // Inserted -> Deleted.
-    item.endState++ // This will set it to be Deleted or double deleted. We don't actually need to count how many times.
+    // And mark the item as deleted. For the curState, we can't get into a "double deletes"
+    // state here, because item.curState must be Inserted right now. For endState, we
+    // don't care about double deletes at all.
+    item.curState = item.endState = ItemState.Deleted
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[lv] = item.lv
@@ -418,8 +415,8 @@ function importOpLog(items: DTOpLogItem[]): ListOpLog {
 
 ;(() => {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
-  const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
-  // const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
+  // const data = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
+  const data = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
   const oplog = importOpLog(data)
   // console.log(oplog.cg)
 

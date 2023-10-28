@@ -2,7 +2,7 @@
 import * as causalGraph from "./causal-graph.js"
 import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
 import { Branch, LVRange } from "./types.js"
-import { assert } from './utils.js'
+import { assert, assertEq } from './utils.js'
 
 enum ItemState {
   NotYetInserted = -1,
@@ -61,17 +61,15 @@ interface WalkItem {
  * This is a naive traversal. Pathological cases may significantly slow down processing.
  * But its simple and correct.
  */
-function *walkCG(cg: causalGraph.CausalGraph, vStart: number = 0, vEnd: number = causalGraph.nextLV(cg)): Generator<WalkItem> {
+function *walkCG(cg: causalGraph.CausalGraph, curLV: number[] = [], vStart: number = 0, vEnd: number = causalGraph.nextLV(cg)): Generator<WalkItem, number[]> {
   // Our current location.
   // let curFrontier: LV[] = []
-  let curLV = -1
 
   // The cg entries are already topologically sorted. Small improvements
   // in this traversal plan result in much faster merging, but even so
   // for simplicity I'm just going to keep the order in cg.entries and walk in order.
   for (const entry of causalGraph.iterVersionsBetween(cg, vStart, vEnd)) {
-    if ((entry.parents.length === 0 && curLV === -1)
-        || (entry.parents.length === 1 && curLV === entry.parents[0])) {
+    if (causalGraph.lvEq(curLV, entry.parents)) {
       // We can just directly process this item in sequence.
       yield {
         retreat: [], advance: [], consume: [entry.version, entry.vEnd]
@@ -79,15 +77,17 @@ function *walkCG(cg: causalGraph.CausalGraph, vStart: number = 0, vEnd: number =
       // curFrontier.length = 1
       // curFrontier[0] = s.vEnd - 1
     } else {
-      const {aOnly, bOnly} = causalGraph.diff(cg, [curLV], entry.parents)
+      const {aOnly, bOnly} = causalGraph.diff(cg, curLV, entry.parents)
       yield {
         retreat: aOnly,
         advance: bOnly,
         consume: [entry.version, entry.vEnd],
       }
     }
-    curLV = entry.vEnd - 1
+    curLV = [entry.vEnd - 1]
   }
+
+  return curLV
 }
 
 
@@ -115,7 +115,7 @@ function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
     item.curState++
   } else {
     // Mark the item as inserted.
-    assert(item.curState === ItemState.NotYetInserted, 'Advance insert for already inserted item')
+    assertEq(item.curState, ItemState.NotYetInserted, 'Advance insert for already inserted item ' + opId)
     item.curState = ItemState.Inserted
     // item.curState = ItemState.Inserted // Also equivalent to item.mergeState++.
   }
@@ -135,7 +135,7 @@ function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
     assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
   } else {
     // Un-insert this item.
-    assert(item.curState === ItemState.Inserted, 'Retreat insert for item not in inserted state')
+    assertEq(item.curState, ItemState.Inserted, 'Retreat insert for item not in inserted state')
   }
 
   item.curState--
@@ -185,12 +185,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
 
   const leftIdx = cursor.idx - 1
 
-  for (; ; scanIdx++) {
-    if (!scanning) {
-      cursor.idx = scanIdx
-      cursor.endPos = scanEndPos
-    }
-
+  while (true) {
     if (scanIdx === ctx.items.length) break // We've reached the end of the document. Insert.
 
     let other = ctx.items[scanIdx]
@@ -213,22 +208,30 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
       if (orightIdx < rightIdx) {
         // This is tricky. We're looking at an item we *might* insert after - but we can't tell yet!
         scanning = true
-        continue
+        // continue
       } else if (orightIdx === rightIdx) {
         // Raw conflict. Order based on user agents.
         if (causalGraph.lvCmp(cg, newItem.opId, other.opId) > 0) {
           break
         } else {
           scanning = false
-          continue
+          // continue
         }
       } else { // oright > right
         scanning = false
-        continue
+        // continue
       }
     } else { // oleft > left
       // Bottom row. Arbitrary (skip), skip, skip
-      continue
+      // continue
+    }
+
+    scanEndPos += itemWidth(other.endState)
+    scanIdx++
+
+    if (!scanning) {
+      cursor.idx = scanIdx
+      cursor.endPos = scanEndPos
     }
   }
 
@@ -236,7 +239,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
 }
 
 function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: number) {
-  if (opId % 10000 === 0) console.log(opId, '...')
+  // if (opId % 10000 === 0) console.log(opId, '...')
 
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[opId]
@@ -322,6 +325,8 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 
   const data: T[] = []
   for (const {retreat, advance, consume} of walkCG(oplog.cg)) {
+    // console.log('r', retreat, 'a', advance, 'c', consume)
+
     // Retreat.
     // Note we're processing these in reverse order to make sure items
     // are undeleted before being un-inserted.
@@ -347,6 +352,8 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
       apply1(ctx, data, oplog, lv)
     }
   }
+
+  // console.log(data, oplog.ops.map(op => op.content), ctx.items)
 
   return { data, version: oplog.cg.heads }
 }
@@ -375,8 +382,6 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 //   // First lets see what we've got. I'll divide the conflicting range into two groups:
 //   // - The conflict set. (Stuff we've already processed that we need to process again).
 //   // - The new operations we need to merge
-//   //
-//   // Both of these lists are in reverse time order(!).
 //   const newOps: LVRange[] = []
 //   const conflictOps: LVRange[] = []
 
@@ -385,6 +390,8 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 //       const target = flag === causalGraph.DiffFlag.B ? newOps : conflictOps
 //       target.push(span)
 //   })
+//   // newOps and conflictOps will be filled in in reverse order. Fix!
+//   newOps.reverse(); conflictOps.reverse()
 
 //   const ctx: EditContext = {
 //     items: [],
@@ -395,6 +402,7 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 //   // The placeholderLength just needs to be bigger than the document was at the time. This is inefficient but simple.
 //   let conflictOpLen = conflictOps.reduce((sum, [start, end]) => sum + end - start, 0)
 //   const placeholderLength = branch.data.length + conflictOpLen
+//   assert(placeholderLength <= Math.min(...commonAncestor))
 
 //   for (let i = 0; i < placeholderLength; i++) {
 //     const item: Item = {
@@ -408,7 +416,11 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 //     ctx.itemsByLV[item.opId] = item
 //   }
 
-//   for (const {retreat, advance, consume} of walkCG(oplog.cg)) {
+//   for (const [start, end] of conflictOps) {
+//     // ... Walk.
+//   }
+
+//   for (const {retreat, advance, consume} of walkCG(oplog.cg, commonAncestor)) {
 //     // Retreat.
 //     // Note we're processing these in reverse order to make sure items
 //     // are undeleted before being un-inserted.

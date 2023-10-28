@@ -13,13 +13,14 @@
 import PriorityQueue from 'priorityqueuejs'
 import bs from 'binary-search'
 import {LV, LVRange, Pair, RawVersion, ROOT, ROOT_LV, VersionSummary} from './types.js'
+import { assert } from './utils.js'
 
 const min2 = (a: number, b: number) => a < b ? a : b
 const max2 = (a: number, b: number) => a > b ? a : b
 
 type CGEntry = {
   version: LV,
-  vEnd: LV,
+  vEnd: LV, // > version.
 
   agent: string,
   seq: number, // Seq for version.
@@ -370,11 +371,14 @@ const eachVersionBetween = (cg: CausalGraph, vStart: LV, vEnd: LV, visit: (e: CG
 
 // Same as above, but as a generator. And generating a new CGEntry when we yield.
 export function *iterVersionsBetween(cg: CausalGraph, vStart: LV, vEnd: LV): Generator<CGEntry> {
+  if (vStart === vEnd) return
+
   let idx = bs(cg.entries, vStart, (entry, needle) => (
     needle < entry.version ? 1
     : needle >= entry.vEnd ? -1
     : 0
   ))
+  // console.log('cg', cg.entries, vStart, vEnd)
   if (idx < 0) throw Error('Invalid or missing version: ' + vStart)
 
   for (; idx < cg.entries.length; idx++) {
@@ -382,11 +386,16 @@ export function *iterVersionsBetween(cg: CausalGraph, vStart: LV, vEnd: LV): Gen
     if (entry.version >= vEnd) break
 
     if (vStart <= entry.version && vEnd >= entry.vEnd) {
+
+      if (entry.version === entry.vEnd) throw Error('Invalid state')
+
       yield entry // Keep the entire entry.
     } else {
       // Slice the entry by vStart / vEnd.
       const vLocalStart = max2(vStart, entry.version)
       const vLocalEnd = min2(vEnd, entry.vEnd)
+
+      if (vLocalStart === vLocalEnd) throw Error('Invalid state')
 
       yield {
         version: vLocalStart,
@@ -954,4 +963,14 @@ export function advanceVersionFromSerialized(cg: CausalGraph, data: PartialSeria
 
   // NOTE: Callers might need to call findDominators on the result.
   return version
+}
+
+export function checkCG(cg: CausalGraph) {
+  // There's a bunch of checks to put in here...
+  for (let i = 0; i < cg.entries.length; i++) {
+    const e = cg.entries[i]
+    assert(e.vEnd > e.version)
+  }
+
+  // TODO: Also check the entry sequence matches the mapping.
 }

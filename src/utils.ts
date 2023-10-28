@@ -33,3 +33,7 @@ export const errExpr = (str: string): never => { throw Error(str) }
 export function assert(expr: boolean, msg?: string) {
   if (!expr) throw Error(msg != null ? `Assertion failed: ${msg}` : 'Assertion failed')
 }
+
+export function assertEq<T>(a: T, b: T, msg?: string) {
+  if (a !== b) throw Error(`Assertion failed: ${a} !== ${b} ${msg ?? ''}`)
+}

@@ -33,16 +33,30 @@ export function createOpLog<T = any>(): ListOpLog<T> {
   }
 }
 
+export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, content: T) {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq+1, oplog.cg.heads)
+  oplog.ops.push({ type: ListOpType.Ins, pos, content })
+}
+
+export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
+  if (len === 0) throw Error('Invalid delete length')
+
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq+len, oplog.cg.heads)
+  for (let i = 0; i < len; i++) {
+    oplog.ops.push({ type: ListOpType.Del, pos })
+  }
+}
+
+
 
 export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
   let vs = causalGraph.summarizeVersion(dest.cg)
-  const [commonVersion, remainder] = causalGraph.intersectWithSummary(src.cg, vs)
-  if (remainder == null) return // No changes.
+  const [commonVersion, _remainder] = causalGraph.intersectWithSummary(src.cg, vs)
+  // `remainder` lists items in dest that are not in src. Not relevant!
 
-  // Now we need to get all the versions since commonVersion. The remainder
-  // actually contains all the information we need, but its easier to just call
-  // diff again and copy the specified ranges. They're guaranteed to be in causal order.
-
+  // Now we need to get all the versions since commonVersion.
   const ranges = causalGraph.diff(src.cg, commonVersion, src.cg.heads).bOnly
 
   // Copy the missing CG entries.
@@ -184,11 +198,11 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
 }
 
 
-;(() => {
+function debugCheck() {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
-  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
+  const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
   // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
-  const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
+  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
   const oplog = importFromConcurrentTrace(data)
 
   // const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
@@ -210,7 +224,7 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
   console.log('Wrote output to out.txt. Took', end - start, 'ms')
   assert.equal(result, data.endContent)
   // console.log('result', result)
-})()
+}
 
 // ;(() => {
 //   const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))

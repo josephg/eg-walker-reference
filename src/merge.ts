@@ -1,6 +1,7 @@
 // This file contains the code to find the final document state based on an oplog.
 import * as causalGraph from "./causal-graph.js"
-import { ListOpLog, ListOpType } from "./oplog.js"
+import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
+import { Branch, LVRange } from "./types.js"
 import { assert } from './utils.js'
 
 enum ItemState {
@@ -60,7 +61,7 @@ interface WalkItem {
  * This is a naive traversal. Pathological cases may significantly slow down processing.
  * But its simple and correct.
  */
-function *walkCG(cg: causalGraph.CausalGraph): Generator<WalkItem> {
+function *walkCG(cg: causalGraph.CausalGraph, vStart: number = 0, vEnd: number = causalGraph.nextLV(cg)): Generator<WalkItem> {
   // Our current location.
   // let curFrontier: LV[] = []
   let curLV = -1
@@ -68,24 +69,24 @@ function *walkCG(cg: causalGraph.CausalGraph): Generator<WalkItem> {
   // The cg entries are already topologically sorted. Small improvements
   // in this traversal plan result in much faster merging, but even so
   // for simplicity I'm just going to keep the order in cg.entries and walk in order.
-  for (const s of cg.entries) {
-    if ((s.parents.length === 0 && curLV === -1)
-        || (s.parents.length === 1 && curLV === s.parents[0])) {
+  for (const entry of causalGraph.iterVersionsBetween(cg, vStart, vEnd)) {
+    if ((entry.parents.length === 0 && curLV === -1)
+        || (entry.parents.length === 1 && curLV === entry.parents[0])) {
       // We can just directly process this item in sequence.
       yield {
-        retreat: [], advance: [], consume: [s.version, s.vEnd]
+        retreat: [], advance: [], consume: [entry.version, entry.vEnd]
       }
       // curFrontier.length = 1
       // curFrontier[0] = s.vEnd - 1
     } else {
-      const {aOnly, bOnly} = causalGraph.diff(cg, [curLV], s.parents)
+      const {aOnly, bOnly} = causalGraph.diff(cg, [curLV], entry.parents)
       yield {
         retreat: aOnly,
         advance: bOnly,
-        consume: [s.version, s.vEnd],
+        consume: [entry.version, entry.vEnd],
       }
     }
-    curLV = s.vEnd - 1
+    curLV = entry.vEnd - 1
   }
 }
 
@@ -96,7 +97,7 @@ interface DocCursor {
   endPos: number,
 }
 
-function advance1(ctx: EditContext, oplog: ListOpLog<string>, opId: number) {
+function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
   // const cursor = findByLV(ctx, lv)
   // const item = ctx.items[cursor.idx]
@@ -120,7 +121,7 @@ function advance1(ctx: EditContext, oplog: ListOpLog<string>, opId: number) {
   }
 }
 
-function retreat1(ctx: EditContext, oplog: ListOpLog<string>, opId: number) {
+function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
   // const cursor = findByLV(ctx, lv)
   // const item = ctx.items[cursor.idx]
@@ -312,16 +313,14 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
   }
 }
 
-export function mergeString(oplog: ListOpLog<string>): string {
+export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
     itemsByLV: new Array(oplog.ops.length).fill(null),
   }
 
-  // An array of single unicode characters.
-  const dest: string[] = []
-
+  const data: T[] = []
   for (const {retreat, advance, consume} of walkCG(oplog.cg)) {
     // Retreat.
     // Note we're processing these in reverse order to make sure items
@@ -345,10 +344,101 @@ export function mergeString(oplog: ListOpLog<string>): string {
     const [start, end] = consume
     for (let lv = start; lv < end; lv++) {
       // console.log('apply1', lv, oplog.ops[lv].type)
-      apply1(ctx, dest, oplog, lv)
+      apply1(ctx, data, oplog, lv)
     }
   }
 
-  return dest.join('')
+  return { data, version: oplog.cg.heads }
 }
 
+// export function mergeLatest<T>(branch: Branch<T>, oplog: ListOpLog<T>) {
+//   // We have an existing checkout of a list document. We want to merge some new changes in the oplog into
+//   // our local branch.
+//   //
+//   // How do we do that?
+//   //
+//   // Obviously we could regenerate the branch from scratch - but:
+//   // - That would be very slow
+//   // - It would require reading all the old (existing) list operations - which we want to leave on disk
+//   // - That approach wouldn't allow us to get the difference between old and new state, which is
+//   //   important for updating cursor information and things like that.
+//   //
+//   // Ideally we only want to look at the new operations in the oplog and apply those. However,
+//   // those new operations may be concurrent with operations we've already processed. In that case,
+//   // we need to populate the items list with any potentially concurrent items.
+//   //
+//   // The strategy here looks like this:
+//   // 1. Find the most recent common ancestor of the existing branch & changes we're merging
+//   // 2. Re-iterate through the "conflicting set" of changes we've already merged to populate the items list
+//   // 3. Process the new operations as normal, starting with the crdt items list we've just generated.
+
+//   // First lets see what we've got. I'll divide the conflicting range into two groups:
+//   // - The conflict set. (Stuff we've already processed that we need to process again).
+//   // - The new operations we need to merge
+//   //
+//   // Both of these lists are in reverse time order(!).
+//   const newOps: LVRange[] = []
+//   const conflictOps: LVRange[] = []
+
+//   let commonAncestor = causalGraph.findConflicting(oplog.cg, branch.version, oplog.cg.heads, (span, flag) => {
+//       // Note we'll be visiting these operations in reverse order.
+//       const target = flag === causalGraph.DiffFlag.B ? newOps : conflictOps
+//       target.push(span)
+//   })
+
+//   const ctx: EditContext = {
+//     items: [],
+//     delTargets: new Array(oplog.ops.length).fill(-1),
+//     itemsByLV: new Array(oplog.ops.length).fill(null),
+//   }
+//   // We need some placeholder items to correspond to the document as it looked at the commonAncestor state.
+//   // The placeholderLength just needs to be bigger than the document was at the time. This is inefficient but simple.
+//   let conflictOpLen = conflictOps.reduce((sum, [start, end]) => sum + end - start, 0)
+//   const placeholderLength = branch.data.length + conflictOpLen
+
+//   for (let i = 0; i < placeholderLength; i++) {
+//     const item: Item = {
+//       opId: i, // TODO: Consider using some weird IDs here instead of normal numbers to make it clear.
+//       curState: ItemState.Inserted,
+//       endState: ItemState.Inserted,
+//       originLeft: -1,
+//       originRight: -1,
+//     }
+//     ctx.items.push(item)
+//     ctx.itemsByLV[item.opId] = item
+//   }
+
+//   for (const {retreat, advance, consume} of walkCG(oplog.cg)) {
+//     // Retreat.
+//     // Note we're processing these in reverse order to make sure items
+//     // are undeleted before being un-inserted.
+//     for (let i = retreat.length - 1; i >= 0; i--) {
+//       const [start, end] = retreat[i]
+//       for (let lv = end - 1; lv >= start; lv--) {
+//         // console.log('retreat1', lv, oplog.ops[lv].type)
+//         retreat1(ctx, oplog, lv)
+//       }
+//     }
+
+//     // Advance.
+//     for (const [start, end] of advance) {
+//       for (let lv = start; lv < end; lv++) {
+//         advance1(ctx, oplog, lv)
+//       }
+//     }
+
+//     // Then apply the operation.
+//     const [start, end] = consume
+//     for (let lv = start; lv < end; lv++) {
+//       // console.log('apply1', lv, oplog.ops[lv].type)
+//       apply1(ctx, branch.data, oplog, lv)
+//     }
+//   }
+
+//   // Set the branch version to the latest version.
+//   branch.version = oplog.cg.heads.slice()
+// }
+
+export function mergeString(oplog: ListOpLog<string>): string {
+  return checkoutSimple(oplog).data.join('')
+}

@@ -8,6 +8,7 @@ import { LV, LVRange } from "./types.js";
 // import { assert } from './utils.js';
 import { mergeString } from './merge.js';
 import assert from 'node:assert/strict'
+import { assertSorted } from './utils.js';
 
 export const enum ListOpType {
   Ins = 0,
@@ -26,11 +27,47 @@ export interface ListOpLog<T = any> {
   cg: causalGraph.CausalGraph,
 }
 
+export function createOpLog<T = any>(): ListOpLog<T> {
+  return {
+    ops: [], cg: causalGraph.createCG()
+  }
+}
+
+
+export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
+  let vs = causalGraph.summarizeVersion(dest.cg)
+  const [commonVersion, remainder] = causalGraph.intersectWithSummary(src.cg, vs)
+  if (remainder == null) return // No changes.
+
+  // Now we need to get all the versions since commonVersion. The remainder
+  // actually contains all the information we need, but its easier to just call
+  // diff again and copy the specified ranges. They're guaranteed to be in causal order.
+
+  const ranges = causalGraph.diff(src.cg, commonVersion, src.cg.heads).bOnly
+
+  // Copy the missing CG entries.
+  const cgDiff = causalGraph.serializeDiff(src.cg, ranges)
+  causalGraph.mergePartialVersions(dest.cg, cgDiff)
+
+  // And copy the corresponding oplog entries.
+  for (const [start, end] of ranges) {
+    for (let i = start; i < end; i++) {
+      dest.ops.push(src.ops[i])
+    }
+  }
+}
+
+
 
 
 // This code is for testing the algorithm.
 
 // This is the data format output from the `dt export` command.
+//
+// It might be worth removing this at some point. These editing traces are
+// much closer to DT's internal format - which is nice. And they preserve the actual
+// agent IDs (which the editing traces do not). However, they don't contain the expected
+// text output.
 interface DTOpLogItem {
   agent: string,
   // LV.
@@ -78,6 +115,9 @@ function importOpLogOld(items: DTOpLogItem[]): ListOpLog {
   return {ops, cg}
 }
 
+// This is the data format from the `dt export-trace` command.
+// This lets us run any editing trace in the concurrent editing traces repository:
+// https://github.com/josephg/editing-traces
 interface ConcurrentTrace {
   kind: 'concurrent',
   endContent: string,
@@ -116,7 +156,7 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
     const seqEnd = seqStart + len
     nextSeqForAgent[txn.agent] = seqEnd
 
-    causalGraph.add(cg, `${txn.agent}`, seqStart, seqEnd, parents)
+    causalGraph.add(cg, `${txn.agent}`.padStart(7, ' '), seqStart, seqEnd, parents)
 
     // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
     for (let [pos, delHere, insContent] of txn.patches) {
@@ -151,21 +191,55 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
   const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
   const oplog = importFromConcurrentTrace(data)
 
+  // const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
+  // const oplog = importOpLogOld(data)
+
   // console.log(oplog.cg)
 
   // for (const w of walkCG(cg)) {
   //   console.log('w', w)
   // }
 
+  console.log('processing', oplog.ops.length, 'ops...')
   const start = Date.now()
   let result = ''
   for (let i = 0; i < 1; i++) result = mergeString(oplog)
   const end = Date.now()
   fs.writeFileSync('out.txt', result)
 
-  assert.equal(result, data.endContent)
-
   console.log('Wrote output to out.txt. Took', end - start, 'ms')
+  assert.equal(result, data.endContent)
   // console.log('result', result)
 })()
 
+// ;(() => {
+//   const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
+//   const oplog1 = importOpLogOld(data)
+
+//   const data2: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
+//   const oplog2 = importFromConcurrentTrace(data2)
+
+//   const ab: Record<string, string> = {}
+//   const ba: Record<string, string> = {}
+//   for (let i = 0; i < oplog1.cg.entries.length; i++) {
+//     const e1 = oplog1.cg.entries[i], e2 = oplog2.cg.entries[i]
+
+//     const a1 = e1.agent, a2 = e2.agent
+//     if (ab[a1] == null) { ab[a1] = a2 } else {
+//       assert.equal(ab[a1], a2)
+//     }
+//     if (ba[a2] == null) { ba[a2] = a1 } else {
+//       assert.equal(ba[a2], a1)
+//     }
+
+//     // console.log(e1, e2)
+//     assert.deepEqual({...e1, agent:''}, {...e2, agent:''})
+//   }
+
+//   assertSorted(Object.keys(ab).sort().map(a => ab[a]).map(x => Number(x)))
+
+//   assert.deepEqual(oplog1.ops, oplog2.ops)
+//   assert.deepEqual(oplog1.cg.entries.length, oplog2.cg.entries.length)
+//   // assert.deepEqual(oplog1.cg., oplog2.ops)
+
+// })()

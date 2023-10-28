@@ -368,6 +368,63 @@ const eachVersionBetween = (cg: CausalGraph, vStart: LV, vEnd: LV, visit: (e: CG
   }
 }
 
+// Same as above, but as a generator. And generating a new CGEntry when we yield.
+export function *iterVersionsBetween(cg: CausalGraph, vStart: LV, vEnd: LV): Generator<CGEntry> {
+  let idx = bs(cg.entries, vStart, (entry, needle) => (
+    needle < entry.version ? 1
+    : needle >= entry.vEnd ? -1
+    : 0
+  ))
+  if (idx < 0) throw Error('Invalid or missing version: ' + vStart)
+
+  for (; idx < cg.entries.length; idx++) {
+    const entry = cg.entries[idx]
+    if (entry.version >= vEnd) break
+
+    if (vStart <= entry.version && vEnd >= entry.vEnd) {
+      yield entry // Keep the entire entry.
+    } else {
+      // Slice the entry by vStart / vEnd.
+      const vLocalStart = max2(vStart, entry.version)
+      const vLocalEnd = min2(vEnd, entry.vEnd)
+
+      yield {
+        version: vLocalStart,
+        vEnd: vLocalEnd,
+        agent: entry.agent,
+        seq: entry.seq + (vLocalStart - entry.version),
+        parents: vLocalStart === entry.version ? entry.parents : [vLocalStart - 1],
+      }
+    }
+  }
+}
+// interface VisitEntry {
+//   entry: CGEntry,
+//   vStart: LV,
+//   vEnd: LV,
+// }
+
+// export function *iterVersionsBetween(cg: CausalGraph, vStart: LV, vEnd: LV): Generator<VisitEntry> {
+//   let idx = bs(cg.entries, vStart, (entry, needle) => (
+//     needle < entry.version ? 1
+//     : needle >= entry.vEnd ? -1
+//     : 0
+//   ))
+//   if (idx < 0) throw Error('Invalid or missing version: ' + vStart)
+
+//   for (; idx < cg.entries.length; idx++) {
+//     const entry = cg.entries[idx]
+//     if (entry.version >= vEnd) break
+
+//     // const offset = max2(vStart - entry.version, 0)
+//     yield {
+//       entry,
+//       vStart: max2(vStart, entry.version),
+//       vEnd: min2(vEnd, entry.vEnd)
+//     }
+//   }
+// }
+
 /** version is -1 when the seq does not overlap. Each yield is guaranteed to be a version run. */
 type IntersectVisitor = (agent: string, startSeq: number, endSeq: number, version: number) => void
 
@@ -817,4 +874,84 @@ export const compareVersions = (cg: CausalGraph, a: LV, b: LV): number => {
     return versionContainsLV(cg, [b], a) ? 1 : 0
   }
   throw new Error('a and b are equal')
+}
+
+
+// *** Tools to syncronize causal graphs ***
+
+type PartialSerializedCGEntry = {
+  agent: string,
+  seq: number,
+  len: number,
+
+  parents: RawVersion[]
+}
+
+export type PartialSerializedCG = PartialSerializedCGEntry[]
+
+/**
+ * The entries returned from this function are in the order of versions
+ * specified in ranges.
+ */
+export function serializeDiff(cg: CausalGraph, ranges: LVRange[]): PartialSerializedCG {
+  const entries: PartialSerializedCGEntry[] = []
+  for (let [start, end] of ranges) {
+    while (start != end) {
+      const [e, offset] = findEntryContaining(cg, start)
+
+      const localEnd = min2(end, e.vEnd)
+      const len = localEnd - start
+      const parents: RawVersion[] = offset === 0
+        ? lvToRawList(cg, e.parents)
+        : [[e.agent, e.seq + offset - 1]]
+
+      entries.push({
+        agent: e.agent,
+        seq: e.seq + offset,
+        len,
+        parents
+      })
+
+      start += len
+    }
+  }
+
+  return entries
+}
+
+//! The entries returned from this function are always in causal order.
+export function serializeFromVersion(cg: CausalGraph, v: LV[]): PartialSerializedCG {
+  const ranges = diff(cg, v, cg.heads).bOnly
+  return serializeDiff(cg, ranges)
+}
+
+export function mergePartialVersions(cg: CausalGraph, data: PartialSerializedCG): LVRange {
+  const start = nextLV(cg)
+
+  for (const {agent, seq, len, parents} of data) {
+    addRaw(cg, [agent, seq], len, parents)
+  }
+  return [start, nextLV(cg)]
+}
+
+export function *mergePartialVersions2(cg: CausalGraph, data: PartialSerializedCG) {
+  // const start = nextLV(cg)
+
+  for (const {agent, seq, len, parents} of data) {
+    const newEntry = addRaw(cg, [agent, seq], len, parents)
+    if (newEntry != null) yield newEntry
+  }
+
+  // return [start, nextLV(cg)]
+}
+
+export function advanceVersionFromSerialized(cg: CausalGraph, data: PartialSerializedCG, version: LV[]): LV[] {
+  for (const {agent, seq, len, parents} of data) {
+    const parentLVs = rawToLVList(cg, parents)
+    const vLast = rawToLV(cg, agent, seq + len - 1)
+    version = advanceFrontier(version, vLast, parentLVs)
+  }
+
+  // NOTE: Callers might need to call findDominators on the result.
+  return version
 }

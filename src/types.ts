@@ -17,3 +17,11 @@ export interface VersionSummary {[agent: string]: [number, number][]}
 // export type RawHeads = RawVersion[]
 
 export type Pair<T> = [LV, T]
+
+
+
+
+export interface Branch<T = any> {
+  data: T[],
+  version: LV[]
+}

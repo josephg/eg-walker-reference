@@ -96,7 +96,7 @@ interface DTExport {
   txns: DTExportItem[],
 }
 
-function importOpLogOld(data: DTExport): ListOpLog {
+function importDTOpLog(data: DTExport): ListOpLog {
   const ops: ListOp[] = []
   const cg = causalGraph.createCG()
 
@@ -229,38 +229,22 @@ function debugCheck() {
   // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
   // const oplog = importFromConcurrentTrace(data)
 
-  const data: DTExport = JSON.parse(fs.readFileSync('testdata/git-makefile-raw.json', 'utf-8'))
-  // const data: DTExport = JSON.parse(fs.readFileSync('testdata/ff-raw.json', 'utf-8'))
-  const oplog = importOpLogOld(data)
+  const data: DTExport = JSON.parse(fs.readFileSync('testdata/ff-raw.json', 'utf-8'))
+  // const data: DTExport = JSON.parse(fs.readFileSync('testdata/git-makefile-raw.json', 'utf-8'))
+  // const data: DTExport = JSON.parse(fs.readFileSync('testdata/node_nodecc-raw.json', 'utf-8'))
+  const oplog = importDTOpLog(data)
 
   check1(oplog, data.endContent, true)
-
-  // console.log(oplog.cg)
-
-  // for (const w of walkCG(cg)) {
-  //   console.log('w', w)
-  // }
-
-  // console.log('processing', oplog.ops.length, 'ops...')
-  // const start = Date.now()
-  // let result = ''
-  // for (let i = 0; i < 1; i++) result = mergeString(oplog)
-  // const end = Date.now()
-  // fs.writeFileSync('out.txt', result)
-
-  // console.log('Wrote output to out.txt. Took', end - start, 'ms')
-  // assert.equal(result, data.endContent)
-  // console.log('result', result)
 }
 
-// debugCheck()
+debugCheck()
 
 function conformance() {
-  const runs: DTExport[] = JSON.parse(fs.readFileSync('conformance.json', 'utf-8'))
+  const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance.json', 'utf-8'))
   console.log(`Running ${runs.length} conformance tests...`)
 
   for (const data of runs) {
-    const oplog = importOpLogOld(data)
+    const oplog = importDTOpLog(data)
     check1(oplog, data.endContent, false)
     // console.log(data.endContent)
   }
@@ -269,38 +253,6 @@ function conformance() {
 }
 
 // conformance()
-
-// ;(() => {
-//   const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
-//   const oplog1 = importOpLogOld(data)
-
-//   const data2: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
-//   const oplog2 = importFromConcurrentTrace(data2)
-
-//   const ab: Record<string, string> = {}
-//   const ba: Record<string, string> = {}
-//   for (let i = 0; i < oplog1.cg.entries.length; i++) {
-//     const e1 = oplog1.cg.entries[i], e2 = oplog2.cg.entries[i]
-
-//     const a1 = e1.agent, a2 = e2.agent
-//     if (ab[a1] == null) { ab[a1] = a2 } else {
-//       assert.equal(ab[a1], a2)
-//     }
-//     if (ba[a2] == null) { ba[a2] = a1 } else {
-//       assert.equal(ba[a2], a1)
-//     }
-
-//     // console.log(e1, e2)
-//     assert.deepEqual({...e1, agent:''}, {...e2, agent:''})
-//   }
-
-//   assertSorted(Object.keys(ab).sort().map(a => ab[a]).map(x => Number(x)))
-
-//   assert.deepEqual(oplog1.ops, oplog2.ops)
-//   assert.deepEqual(oplog1.cg.entries.length, oplog2.cg.entries.length)
-//   // assert.deepEqual(oplog1.cg., oplog2.ops)
-
-// })()
 
 const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
   const result = causalGraph.createCG()
@@ -323,45 +275,3 @@ const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
 
   return result
 }
-
-function xxx() {
-  const data: DTExport = JSON.parse(fs.readFileSync('testdata/git-makefile-raw.json', 'utf-8'))
-  const oplog = importOpLogOld(data)
-  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
-  // const oplog = importFromConcurrentTrace(data)
-
-
-  interface SplatData {
-    numOps: number,
-    f: number[],
-    r: RawVersion[],
-    result: string,
-  }
-  const splat: SplatData[] = JSON.parse(fs.readFileSync('splat.json', 'utf-8'))
-
-  for (const s of splat) {
-    console.log('s', s.numOps)
-    // Make an abridged oplog.
-    const smallOplog: ListOpLog = {
-      cg: trimCG(oplog.cg, s.numOps),
-      ops: oplog.ops.slice(0, s.numOps),
-    }
-
-    const actual = mergeString(smallOplog)
-    if (actual !== s.result) {
-      console.log(s.f, smallOplog.cg.heads)
-      console.log(s.r)
-      console.log(causalGraph.lvToRawList(smallOplog.cg))
-
-      fs.writeFileSync('a.txt', actual)
-      fs.writeFileSync('b.txt', s.result)
-
-      // console.log('expected', s.result)
-      // console.log('actual', actual)
-      throw Error('results dont match. written actual and expected to a.txt, b.txt')
-    }
-  }
-  // console.log(splat[1])
-}
-
-// xxx()

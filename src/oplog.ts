@@ -4,7 +4,7 @@
 
 import * as fs from 'node:fs'
 import * as causalGraph from "./causal-graph.js";
-import { LV, LVRange } from "./types.js";
+import { LV, LVRange, RawVersion } from "./types.js";
 // import { assert } from './utils.js';
 import { mergeString } from './merge.js';
 import assert from 'node:assert/strict'
@@ -82,33 +82,39 @@ export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
 // much closer to DT's internal format - which is nice. And they preserve the actual
 // agent IDs (which the editing traces do not). However, they don't contain the expected
 // text output.
-interface DTOpLogItem {
+interface DTExportItem {
   agent: string,
-  // LV.
+  seqStart: number,
   span: LVRange,
   parents: LV[],
 
   ops: [pos: number, del: number, insContent: string][],
 }
 
-function importOpLogOld(items: DTOpLogItem[]): ListOpLog {
+interface DTExport {
+  endContent: string,
+  txns: DTExportItem[],
+}
+
+function importOpLogOld(data: DTExport): ListOpLog {
   const ops: ListOp[] = []
   const cg = causalGraph.createCG()
 
   // I'm going to reuse the LVs from diamond types directly.
   // But we need to shatter them.
-  const nextSeqForAgent: Record<string, number> = {}
+  // const nextSeqForAgent: Record<string, number> = {}
 
-  for (const item of items) {
-    const seqStart = nextSeqForAgent[item.agent] ?? 0
-    const len = item.span[1] - item.span[0]
+  for (const txn of data.txns) {
+    // const seqStart = nextSeqForAgent[txn.agent] ?? 0
+    const len = txn.span[1] - txn.span[0]
+    const seqStart = txn.seqStart
     const seqEnd = seqStart + len
-    causalGraph.add(cg, item.agent, seqStart, seqEnd, item.parents)
+    causalGraph.add(cg, txn.agent, seqStart, seqEnd, txn.parents)
 
-    nextSeqForAgent[item.agent] = seqEnd
+    // nextSeqForAgent[txn.agent] = seqEnd
 
     // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
-    for (let [pos, delHere, insContent] of item.ops) {
+    for (let [pos, delHere, insContent] of txn.ops) {
       // console.log(pos, delHere, insContent)
       if ((delHere > 0) === (insContent !== '')) throw Error('Operation must be an insert or delete')
 
@@ -197,16 +203,37 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
   return {ops, cg}
 }
 
+function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean) {
+  if (verbose) console.log('processing', oplog.ops.length, 'ops...')
+  const start = Date.now()
+  let result = ''
+  for (let i = 0; i < 1; i++) result = mergeString(oplog)
+  const end = Date.now()
+  // fs.writeFileSync('out.txt', result)
+  // console.log('Wrote output to out.txt. Took', end - start, 'ms')
+  if (verbose) console.log('Generated output in', end - start, 'ms')
+
+  try {
+    assert.equal(result, expectedResult)
+  } catch (e) {
+    fs.writeFileSync('out.txt', result)
+    console.log('Wrote actual output to out.txt')
+    throw e
+  }
+}
 
 function debugCheck() {
   // const data = JSON.parse(fs.readFileSync('am.json', 'utf-8'))
-  const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
   // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/node_nodecc.json', 'utf-8'))
   // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/ff.json', 'utf-8'))
-  const oplog = importFromConcurrentTrace(data)
+  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
+  // const oplog = importFromConcurrentTrace(data)
 
-  // const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
-  // const oplog = importOpLogOld(data)
+  const data: DTExport = JSON.parse(fs.readFileSync('testdata/git-makefile-raw.json', 'utf-8'))
+  // const data: DTExport = JSON.parse(fs.readFileSync('testdata/ff-raw.json', 'utf-8'))
+  const oplog = importOpLogOld(data)
+
+  check1(oplog, data.endContent, true)
 
   // console.log(oplog.cg)
 
@@ -214,17 +241,34 @@ function debugCheck() {
   //   console.log('w', w)
   // }
 
-  console.log('processing', oplog.ops.length, 'ops...')
-  const start = Date.now()
-  let result = ''
-  for (let i = 0; i < 1; i++) result = mergeString(oplog)
-  const end = Date.now()
-  fs.writeFileSync('out.txt', result)
+  // console.log('processing', oplog.ops.length, 'ops...')
+  // const start = Date.now()
+  // let result = ''
+  // for (let i = 0; i < 1; i++) result = mergeString(oplog)
+  // const end = Date.now()
+  // fs.writeFileSync('out.txt', result)
 
-  console.log('Wrote output to out.txt. Took', end - start, 'ms')
-  assert.equal(result, data.endContent)
+  // console.log('Wrote output to out.txt. Took', end - start, 'ms')
+  // assert.equal(result, data.endContent)
   // console.log('result', result)
 }
+
+// debugCheck()
+
+function conformance() {
+  const runs: DTExport[] = JSON.parse(fs.readFileSync('conformance.json', 'utf-8'))
+  console.log(`Running ${runs.length} conformance tests...`)
+
+  for (const data of runs) {
+    const oplog = importOpLogOld(data)
+    check1(oplog, data.endContent, false)
+    // console.log(data.endContent)
+  }
+
+  console.log('All tests pass!')
+}
+
+// conformance()
 
 // ;(() => {
 //   const data: DTOpLogItem[] = JSON.parse(fs.readFileSync('git-makefile.json', 'utf-8'))
@@ -257,3 +301,67 @@ function debugCheck() {
 //   // assert.deepEqual(oplog1.cg., oplog2.ops)
 
 // })()
+
+const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
+  const result = causalGraph.createCG()
+  for (let entry of cg.entries) {
+    let len = entry.vEnd - entry.version
+
+    if (n < len) {
+      // Trim the entry.
+      entry = {
+        ...entry,
+        vEnd: entry.version + n
+      }
+      len = n
+    }
+
+    causalGraph.add(result, entry.agent, entry.seq, entry.seq + len, entry.parents)
+    n -= len
+    if (n <= 0) break
+  }
+
+  return result
+}
+
+function xxx() {
+  const data: DTExport = JSON.parse(fs.readFileSync('testdata/git-makefile-raw.json', 'utf-8'))
+  const oplog = importOpLogOld(data)
+  // const data: ConcurrentTrace = JSON.parse(fs.readFileSync('testdata/git-makefile.json', 'utf-8'))
+  // const oplog = importFromConcurrentTrace(data)
+
+
+  interface SplatData {
+    numOps: number,
+    f: number[],
+    r: RawVersion[],
+    result: string,
+  }
+  const splat: SplatData[] = JSON.parse(fs.readFileSync('splat.json', 'utf-8'))
+
+  for (const s of splat) {
+    console.log('s', s.numOps)
+    // Make an abridged oplog.
+    const smallOplog: ListOpLog = {
+      cg: trimCG(oplog.cg, s.numOps),
+      ops: oplog.ops.slice(0, s.numOps),
+    }
+
+    const actual = mergeString(smallOplog)
+    if (actual !== s.result) {
+      console.log(s.f, smallOplog.cg.heads)
+      console.log(s.r)
+      console.log(causalGraph.lvToRawList(smallOplog.cg))
+
+      fs.writeFileSync('a.txt', actual)
+      fs.writeFileSync('b.txt', s.result)
+
+      // console.log('expected', s.result)
+      // console.log('actual', actual)
+      throw Error('results dont match. written actual and expected to a.txt, b.txt')
+    }
+  }
+  // console.log(splat[1])
+}
+
+// xxx()

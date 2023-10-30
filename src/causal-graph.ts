@@ -53,10 +53,31 @@ export const createCG = (): CausalGraph => ({
 })
 
 const pushRLEList = <T>(list: T[], newItem: T, tryAppend: (a: T, b: T) => boolean) => {
-  if (list.length > 0) {
-    if (tryAppend(list[list.length - 1], newItem)) return
+  if (list.length === 0 || !tryAppend(list[list.length - 1], newItem)) {
+    list.push(newItem)
   }
-  list.push(newItem)
+}
+
+// This is a variant of pushRLEList when we aren't sure if the new item will actually
+// be appended to the end of the list, or go in the middle!
+const insertRLEList = <T>(list: T[], newItem: T, getKey: (e: T) => number, tryAppend: (a: T, b: T) => boolean) => {
+  const newKey = getKey(newItem)
+  if (list.length === 0 || newKey >= getKey(list[list.length - 1])) {
+    // Common case. Just push the new entry to the end of the list like normal.
+    pushRLEList(list, newItem, tryAppend)
+  } else {
+    // We need to splice the new entry in. Find the index of the previous entry...
+    let idx = bs(list, newKey, (entry, needle) => getKey(entry) - needle)
+    if (idx >= 0) throw Error('Invalid state - item already exists')
+
+    idx = - idx - 1 // The destination index is the 2s compliment of the returned index.
+
+    // Try to append.
+    if (idx === 0 || !tryAppend(list[idx - 1], newItem)) {
+      // No good! Splice in.
+      list.splice(idx, 0, newItem)
+    }
+  }
 }
 
 const tryRangeAppend = (r1: LVRange, r2: LVRange): boolean => {
@@ -209,16 +230,24 @@ export const add = (cg: CausalGraph, agent: string, seqStart: number, seqEnd: nu
     parents,
   }
 
+  // The entry list will remain ordered here in standard version order.
   pushRLEList(cg.entries, entry, tryAppendEntries)
-  pushRLEList(clientEntriesForAgent(cg, agent), { seq: seqStart, seqEnd, version}, tryAppendClientEntry)
+  // But the agent entries may end up out of order, since we might get [b,0] before [b,1] if
+  // the same agent modifies two different branches. Hence, insertRLEList instead of pushRLEList.
+  insertRLEList(
+    clientEntriesForAgent(cg, agent),
+    { seq: seqStart, seqEnd, version },
+    e => e.seq,
+    tryAppendClientEntry
+  )
 
   cg.heads = advanceFrontier(cg.heads, vEnd - 1, parents)
   return entry
 }
 
 export const rawVersionCmp = ([a1, s1]: RawVersion, [a2, s2]: RawVersion) => (
-  a1 < a2 ? 1
-    : a1 > a2 ? -1
+  a1 < a2 ? -1
+    : a1 > a2 ? 1
     : s1 - s2
 )
 

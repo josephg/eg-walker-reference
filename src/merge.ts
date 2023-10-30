@@ -3,6 +3,7 @@ import * as causalGraph from "./causal-graph.js"
 import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
 import { Branch, LVRange } from "./types.js"
 import { assert, assertEq } from './utils.js'
+// import assert from 'node:assert/strict'
 
 enum ItemState {
   NotYetInserted = -1,
@@ -211,7 +212,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
         // continue
       } else if (orightIdx === rightIdx) {
         // Raw conflict. Order based on user agents.
-        if (causalGraph.lvCmp(cg, newItem.opId, other.opId) > 0) {
+        if (causalGraph.lvCmp(cg, newItem.opId, other.opId) < 0) {
           break
         } else {
           scanning = false
@@ -239,7 +240,7 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
 }
 
 function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: number) {
-  // if (opId % 10000 === 0) console.log(opId, '...')
+  // if (opId > 0 && opId % 10000 === 0) console.log(opId, '...')
 
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[opId]
@@ -352,6 +353,12 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
       apply1(ctx, data, oplog, lv)
     }
   }
+
+  // Deep weird check.
+  // const expectedData = ctx.items
+  //   .filter(i => i.endState === ItemState.Inserted)
+  //   .map(i => oplog.ops[i.opId].content)
+  // assert.deepEqual(expectedData, data)
 
   // console.log(data, oplog.ops.map(op => op.content), ctx.items)
 

@@ -1,9 +1,10 @@
 // This file contains the code to find the final document state based on an oplog.
 import * as causalGraph from "./causal-graph.js"
+import { ID, ListFugueSimple } from "./list-fugue-simple.js"
 import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
 import { Branch, LVRange } from "./types.js"
-import { assert, assertEq } from './utils.js'
-// import assert from 'node:assert/strict'
+import { assertEq } from './utils.js'
+import assert from 'node:assert/strict'
 
 enum ItemState {
   NotYetInserted = -1,
@@ -28,9 +29,12 @@ interface Item {
    */
   endState: ItemState,
 
-  // -1 means start / end of document. This is the core list CRDT (via Yjs).
+  // -1 means start / end of document. This is the core list CRDT (sync9/fugue).
   originLeft: number | -1,
-  originRight: number | -1,
+
+  // -1 means the end of the document. This uses fugue's semantics.
+  // All right children have a rightParent of -1.
+  rightParent: number | -1,
 }
 
 interface EditContext {
@@ -170,14 +174,33 @@ const findItemIdx = (ctx: EditContext, needle: number) => {
 }
 
 /**
- * YjsMod, stolen and adapted from reference-crdts.
+ * This function is called when we process insert operations to find (via a scan) the
+ * correct location in the item list to insert the new item. The location is passed
+ * back to the caller via the (modified) cursor.
  *
- * In the case of concurrent inserts, this function finds the correct location in the
- * item list to insert the item into. The location is passed back to the caller via the
- * cursor being modified.
+ * Some history:
+ *
+ * This algorithm started its life in Yjs, written by Kevin Jahns. I adapted that approach
+ * for reference-crdts. Then modified & improved it in place to make YjsMod. Then the
+ * algorithm was improved further by Matthew Weidner to make Fugue. The fugue paper
+ * proves many nice properties about this algorithm and its interleaving behaviour:
+ *
+ * https://arxiv.org/abs/2305.00583
+ *
+ * Finally, I've replaced rightOrigin in fugue-list's items implementation with rightParent.
+ * (Calculated before integrate is called). Ordinarily this would result in correct behaviour
+ * but pathological performance in the integrate method because rightOrigin is also used in
+ * fugue-list to bound the search for insert location. But, here its easy to simply calculate
+ * rightBound as items are inserted.
+ *
+ * Meanwhile, Greg Little and Michael Toomim wrote a separate sequence CRDT algorithm called
+ * Sync9. Sync9 predated fugue by a couple of years. It was formulated a different way (using
+ * trees), but it turns out the ordering behaviour between sync9 and fugue is identical.
+ *
+ * Anyway, the long and short of it is: This function implements the Sync9 / Fugue CRDT.
  */
-function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, rightIdx: number) {
-  if (cursor.idx === rightIdx) return // If there's no concurrency, we don't need to scan.
+function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, rightBound: number) {
+  if (cursor.idx === rightBound) return // If there's no concurrency, we don't need to scan.
 
   // Sometimes we need to scan ahead and maybe insert there, or maybe insert here.
   let scanning = false
@@ -185,46 +208,22 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
   let scanEndPos = cursor.endPos
 
   const leftIdx = cursor.idx - 1
+  const rightIdx = newItem.rightParent === -1 ? ctx.items.length : findItemIdx(ctx, newItem.rightParent)
 
   while (true) {
-    if (scanIdx === ctx.items.length) break // We've reached the end of the document. Insert.
+    if (scanIdx === rightBound) break // We've reached the end of the insertable section. Stop and insert.
 
     let other = ctx.items[scanIdx]
-    if (other.opId === newItem.originRight) break // End of the concurrent range. Insert.
+    if (other.opId === newItem.rightParent) throw Error('invalid state')
 
     // The index of the origin left / right for the other item.
     let oleftIdx = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
-    let orightIdx = other.originRight === -1 ? ctx.items.length : findItemIdx(ctx, other.originRight)
+    if (oleftIdx < leftIdx) break
+    else if (oleftIdx === leftIdx) {
+      let orightIdx = other.rightParent === -1 ? ctx.items.length : findItemIdx(ctx, other.rightParent)
 
-    // The logic below summarizes to:
-    // if (oleft < left || (oleft === left && oright === right && newItem.id[0] < o.id[0])) break
-    // if (oleft === left) scanning = oright < right
-
-    // Ok now we implement the punnet square of behaviour
-    if (oleftIdx < leftIdx) {
-      // Top row. Insert, insert, arbitrary (insert)
-      break
-    } else if (oleftIdx === leftIdx) {
-      // Middle row.
-      if (orightIdx < rightIdx) {
-        // This is tricky. We're looking at an item we *might* insert after - but we can't tell yet!
-        scanning = true
-        // continue
-      } else if (orightIdx === rightIdx) {
-        // Raw conflict. Order based on user agents.
-        if (causalGraph.lvCmp(cg, newItem.opId, other.opId) < 0) {
-          break
-        } else {
-          scanning = false
-          // continue
-        }
-      } else { // oright > right
-        scanning = false
-        // continue
-      }
-    } else { // oleft > left
-      // Bottom row. Arbitrary (skip), skip, skip
-      // continue
+      if (orightIdx === rightIdx && causalGraph.lvCmp(cg, newItem.opId, other.opId) < 0) break
+      else scanning = orightIdx < rightIdx
     }
 
     scanEndPos += itemWidth(other.endState)
@@ -239,7 +238,13 @@ function integrateYjsMod(ctx: EditContext, cg: causalGraph.CausalGraph, newItem:
   // We've found the position. Insert where the cursor points.
 }
 
-function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: number) {
+function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: number, fugue: ListFugueSimple<T>) {
+  const opIdToFugueId = (id: number): ID | null => {
+    if (id === -1) return null
+    const rawId = causalGraph.lvToRaw(oplog.cg, id)
+    return { sender: rawId[0], counter: rawId[1] }
+  }
+
   // if (opId > 0 && opId % 10000 === 0) console.log(opId, '...')
 
   // This integrates the op into the document. This code is copied from reference-crdts.
@@ -274,6 +279,11 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
+
+    fugue.receivePrimitive({
+      type: 'delete',
+      id: opIdToFugueId(item.opId)!,
+    })
   } else {
     // Insert! This is much more complicated as we need to do the Yjs integration.
     const cursor = findByCurPos(ctx, op.pos)
@@ -288,12 +298,15 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
     const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].opId
 
     // originRight is the ID of the next item which isn't in the NYI curState.
-    let originRight = -1
-    let rightIdx = cursor.idx
-    for (; rightIdx < ctx.items.length; rightIdx++) {
-      const nextItem = ctx.items[rightIdx]
+    let rightParent = -1
+    let tempOriginRight = -1 // TODO: Remove me
+    let rightBound = cursor.idx
+    for (; rightBound < ctx.items.length; rightBound++) {
+      const nextItem = ctx.items[rightBound]
       if (nextItem.curState !== ItemState.NotYetInserted) {
-        originRight = nextItem.opId
+        tempOriginRight = nextItem.opId
+        // We'll take this item for the "right origin" and right bound (highest index) that we can insert at.
+        rightParent = (nextItem.originLeft === originLeft) ? nextItem.opId : -1
         break
       }
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
@@ -303,21 +316,64 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
       endState: ItemState.Inserted,
       opId: opId,
       originLeft,
-      originRight
+      rightParent,
     }
     ctx.itemsByLV[opId] = newItem
 
     // This will update the cursor to find the location we want to insert the item.
-    integrateYjsMod(ctx, oplog.cg, newItem, cursor, rightIdx)
+    integrate(ctx, oplog.cg, newItem, cursor, rightBound)
 
     ctx.items.splice(cursor.idx, 0, newItem)
 
     // And finally, actually insert it in the resulting document.
     dest.splice(cursor.endPos, 0, op.content!)
+
+    let leftId = opIdToFugueId(originLeft) ?? fugue.start.id
+    let rightId = opIdToFugueId(tempOriginRight) ?? fugue.end.id
+    // console.log('inserting', opIdToFugueId(opId), 'left', leftId, 'right', rightId)
+    fugue.receivePrimitive({
+      type: 'insert',
+      id: opIdToFugueId(opId)!,
+      leftOrigin: leftId,
+      rightOrigin: rightId,
+      value: op.content!
+    })
+  }
+}
+
+function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
+  console.log('---- DT STATE ----')
+
+  const depth: Record<number, number> = {}
+  // const kForId = (id: Id, c: T | null) => `${id[0]} ${id[1]} ${id[2] ?? c != null}`
+  // const eltId = (elt: Element<any>) => elt.id.sender === '' ? 'ROOT' : `${elt.id.sender},${elt.id.counter}`
+  depth[-1] = 0
+
+  for (const item of ctx.items) {
+    const isLeftChild = true
+    // const isLeftChild = this.rightParent(elt.originLeft, elt.rightParent) === this.end
+    const parent = isLeftChild ? item.originLeft : item.rightParent
+    const d = parent === -1 ? 0 : depth[parent] + 1
+
+    depth[item.opId] = d
+    const lvToStr = (lv: number) => {
+      if (lv === -1) return 'ROOT'
+      const rv = causalGraph.lvToRaw(oplog.cg, lv)
+      return `[${rv[0]},${rv[1]}]`
+    }
+    const value = item.endState === ItemState.Deleted ? null : oplog.ops[item.opId].content
+
+    // let content = `${isLeftChild ? '/' : '\\'}${elt.value == null
+    let content = `${value == null ? '.' : value} at ${lvToStr(item.opId)} (left ${lvToStr(item.originLeft)})`
+    content += ` right ${lvToStr(item.rightParent)}`
+    // console.log(`${'| '.repeat(d)}${elt.value == null ? chalk.strikethrough(content) : content}`)
+    console.log(`${'| '.repeat(d)}${content}`)
   }
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
+  const fugue = new ListFugueSimple<T>('_unused_')
+
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
@@ -350,7 +406,7 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
     const [start, end] = consume
     for (let lv = start; lv < end; lv++) {
       // console.log('apply1', lv, oplog.ops[lv].type)
-      apply1(ctx, data, oplog, lv)
+      apply1(ctx, data, oplog, lv, fugue)
     }
   }
 
@@ -361,6 +417,17 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
   // assert.deepEqual(expectedData, data)
 
   // console.log(data, oplog.ops.map(op => op.content), ctx.items)
+
+  const fugueState = fugue.toArray()
+  try {
+    assert.deepEqual(fugueState, data)
+  } catch (e) {
+    fugue.debugPrint()
+    console.log()
+    debugPrintCtx(ctx, oplog)
+    // console.log(ctx.items)
+    throw e
+  }
 
   return { data, version: oplog.cg.heads }
 }

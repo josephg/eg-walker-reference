@@ -9,6 +9,7 @@ import { LV, LVRange, RawVersion } from "./types.js";
 import { mergeString } from './merge.js';
 import assert from 'node:assert/strict'
 import { assertSorted } from './utils.js';
+import consoleLib from 'console'
 
 export const enum ListOpType {
   Ins = 0,
@@ -237,13 +238,27 @@ function debugCheck() {
   check1(oplog, data.endContent, true)
 }
 
-debugCheck()
+// debugCheck()
 
 function conformance() {
+  globalThis.console = new consoleLib.Console({
+    stdout: process.stdout, stderr: process.stderr,
+    inspectOptions: {depth: null}
+  })
+
   const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance.json', 'utf-8'))
+  // const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance-fugue.json', 'utf-8'))
+  // const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance-fugue2.json', 'utf-8'))
   console.log(`Running ${runs.length} conformance tests...`)
 
-  for (const data of runs) {
+  // const data = runs[542]
+  // console.log(data)
+  // const oplog = importDTOpLog(data)
+  // check1(oplog, data.endContent, false)
+
+  for (let i = 0; i < runs.length; i++) {
+    // console.log('conformance', i)
+    const data = runs[i]
     const oplog = importDTOpLog(data)
     check1(oplog, data.endContent, false)
     // console.log(data.endContent)
@@ -252,7 +267,7 @@ function conformance() {
   console.log('All tests pass!')
 }
 
-// conformance()
+conformance()
 
 const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
   const result = causalGraph.createCG()

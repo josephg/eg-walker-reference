@@ -71,6 +71,7 @@ function fuzzer(seed: number) {
   let nextItem = 0
 
   for (let i = 0; i < 100; i++) {
+    // console.log('i', i)
     // Generate some random operations
     for (let j = 0; j < 3; j++) {
       const doc = randDoc()
@@ -124,5 +125,6 @@ function fuzzLots() {
   }
 }
 
-// fuzzer(58)
+// fuzzer(Number(process.env['SEED']) ?? 0)
+// fuzzer(3)
 fuzzLots()

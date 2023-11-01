@@ -199,8 +199,9 @@ const findItemIdx = (ctx: EditContext, needle: number) => {
  *
  * Anyway, the long and short of it is: This function implements the Sync9 / Fugue CRDT.
  */
-function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor, rightBound: number) {
-  if (cursor.idx === rightBound) return // If there's no concurrency, we don't need to scan.
+function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor) {
+  // If there's no concurrency, we don't need to scan.
+  if (cursor.idx >= ctx.items.length || ctx.items[cursor.idx].curState !== ItemState.NotYetInserted) return
 
   // Sometimes we need to scan ahead and maybe insert there, or maybe insert here.
   let scanning = false
@@ -210,10 +211,14 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
   const leftIdx = cursor.idx - 1
   const rightIdx = newItem.rightParent === -1 ? ctx.items.length : findItemIdx(ctx, newItem.rightParent)
 
-  while (true) {
-    if (scanIdx === rightBound) break // We've reached the end of the insertable section. Stop and insert.
-
+  while (scanIdx < ctx.items.length) {
     let other = ctx.items[scanIdx]
+
+    // When concurrent inserts happen, the newly inserted item goes somewhere between the
+    // insert position itself (passed in through cursor) to the next item that existed
+    // when which the insert occurred. We can use the item's state to bound the search.
+    if (other.curState !== ItemState.NotYetInserted) break
+
     if (other.opId === newItem.rightParent) throw Error('invalid state')
 
     // The index of the origin left / right for the other item.
@@ -300,9 +305,10 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
     // originRight is the ID of the next item which isn't in the NYI curState.
     let rightParent = -1
     let tempOriginRight = -1 // TODO: Remove me
-    let rightBound = cursor.idx
-    for (; rightBound < ctx.items.length; rightBound++) {
-      const nextItem = ctx.items[rightBound]
+
+    // Scan to find the newly inserted item's right parent.
+    for (let i = cursor.idx; i < ctx.items.length; i++) {
+      const nextItem = ctx.items[i]
       if (nextItem.curState !== ItemState.NotYetInserted) {
         tempOriginRight = nextItem.opId
         // We'll take this item for the "right origin" and right bound (highest index) that we can insert at.
@@ -321,7 +327,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: ListOpLog<T>, opId: numbe
     ctx.itemsByLV[opId] = newItem
 
     // This will update the cursor to find the location we want to insert the item.
-    integrate(ctx, oplog.cg, newItem, cursor, rightBound)
+    integrate(ctx, oplog.cg, newItem, cursor)
 
     ctx.items.splice(cursor.idx, 0, newItem)
 

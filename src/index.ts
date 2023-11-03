@@ -36,7 +36,7 @@ function assertEq<T>(a: T, b: T, msg?: string) {
  * Operations also have an ID (agent,seq pair) and a list of parent versions. In this
  * implementation, the ID and parents are stored separately - in the causal graph.
 */
-export type SimpleListOp<T = any> = {
+export type ListOp<T = any> = {
   type: 'ins',
   pos: number
   content: T
@@ -45,13 +45,13 @@ export type SimpleListOp<T = any> = {
   pos: number,
 }
 
-export interface SimpleListOpLog<T = any> {
+export interface ListOpLog<T = any> {
   // The LV for each op is its index in this list.
-  ops: SimpleListOp<T>[],
+  ops: ListOp<T>[],
   cg: causalGraph.CausalGraph,
 }
 
-export function createSimpleOpLog<T = any>(): SimpleListOpLog<T> {
+export function createOpLog<T = any>(): ListOpLog<T> {
   return {
     ops: [],
 
@@ -61,13 +61,13 @@ export function createSimpleOpLog<T = any>(): SimpleListOpLog<T> {
   }
 }
 
-export function localInsert<T>(oplog: SimpleListOpLog<T>, agent: string, pos: number, content: T) {
+export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, content: T) {
   const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
   causalGraph.add(oplog.cg, agent, seq, seq+1, oplog.cg.heads)
   oplog.ops.push({ type: 'ins', pos, content })
 }
 
-export function localDelete<T>(oplog: SimpleListOpLog<T>, agent: string, pos: number, len: number = 1) {
+export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
   if (len === 0) throw Error('Invalid delete length')
 
   const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
@@ -80,7 +80,7 @@ export function localDelete<T>(oplog: SimpleListOpLog<T>, agent: string, pos: nu
 /**
  * This function adds everything in the src oplog to dest.
  */
-export function mergeOplogInto<T>(dest: SimpleListOpLog<T>, src: SimpleListOpLog<T>) {
+export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
   let vs = causalGraph.summarizeVersion(dest.cg)
   const [commonVersion, _remainder] = causalGraph.intersectWithSummary(src.cg, vs)
   // `remainder` lists items in dest that are not in src. Not relevant!
@@ -163,7 +163,7 @@ interface EditContext {
   curVersion: number[],
 }
 
-function advance1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) {
+function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
 
   // For inserts, the item being reactivated is just the op itself. For deletes,
@@ -182,7 +182,7 @@ function advance1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) 
   }
 }
 
-function retreat1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) {
+function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
   const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
@@ -301,7 +301,7 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
   // We've found the position. Insert where the cursor points.
 }
 
-function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: SimpleListOpLog<T>, opId: number) {
+function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, opId: number) {
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[opId]
 
@@ -381,7 +381,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: SimpleListOpLo
 
 // This is a helper debugging function, for printing out the internal state of the
 // editing context.
-function debugPrintCtx<T>(ctx: EditContext, oplog: SimpleListOpLog<T>) {
+function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
   console.log('---- DT STATE ----')
 
   const depth: Record<number, number> = {}
@@ -427,7 +427,7 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: SimpleListOpLog<T>) {
  */
 export function traverseAndApply<T>(
   ctx: EditContext,
-  oplog: SimpleListOpLog<T>,
+  oplog: ListOpLog<T>,
   snapshot: T[] | null,
   fromOp: number = 0,
   toOp: number = causalGraph.nextLV(oplog.cg) // Same as oplog.ops.length.
@@ -481,7 +481,7 @@ export function traverseAndApply<T>(
   }
 }
 
-export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
+export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
@@ -495,7 +495,7 @@ export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
   return snapshot
 }
 
-export function mergeString(oplog: SimpleListOpLog<string>): string {
+export function mergeString(oplog: ListOpLog<string>): string {
   return checkoutSimple(oplog).join('')
 }
 
@@ -511,7 +511,7 @@ export interface Branch<T = any> {
   version: number[]
 }
 
-export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: SimpleListOpLog<T>, mergeVersion: number[] = oplog.cg.heads) {
+export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>, mergeVersion: number[] = oplog.cg.heads) {
   // We have an existing checkout of a list document. We want to merge some new changes in the oplog into
   // our local branch.
   //

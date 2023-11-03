@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as causalGraph from "../src/causal-graph.js"
 import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { SimpleListOp, SimpleListOpLog, mergeString } from '../src/index.js';
+import { ListOp, ListOpLog, mergeString } from '../src/index.js';
 
 import assert from 'node:assert/strict'
 import consoleLib from 'console'
@@ -38,8 +38,8 @@ interface DTExport {
   txns: DTExportItem[],
 }
 
-function importDTOpLog(data: DTExport): SimpleListOpLog {
-  const ops: SimpleListOp[] = []
+function importDTOpLog(data: DTExport): ListOpLog {
+  const ops: ListOp[] = []
   const cg = causalGraph.createCG()
 
   // I'm going to reuse the LVs from diamond types directly.
@@ -96,10 +96,10 @@ interface ConcurrentTraceTxn {
   patches: [pos: number, del: number, insContent: string][],
 }
 
-function importFromConcurrentTrace(trace: ConcurrentTrace): SimpleListOpLog {
+function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
   if (trace.kind !== 'concurrent') throw Error('Invalid data - not a concurrent editing trace')
 
-  const ops: SimpleListOp[] = []
+  const ops: ListOp[] = []
   const cg = causalGraph.createCG()
 
   const nextSeqForAgent: number[] = new Array(trace.numAgents).fill(0)
@@ -145,7 +145,7 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): SimpleListOpLog {
   return {ops, cg}
 }
 
-function check1(oplog: SimpleListOpLog, expectedResult: string, verbose: boolean) {
+function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean) {
   if (verbose) console.log('processing', oplog.ops.length, 'ops...')
   const start = Date.now()
   let result = ''

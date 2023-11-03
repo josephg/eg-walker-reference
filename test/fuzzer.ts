@@ -1,7 +1,7 @@
 // Run with:
 // $ node dist/simple/test/fuzzer.js
 
-import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch } from '../src/index.js'
+import { checkoutSimple, ListOpLog, createOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch } from '../src/index.js'
 
 import * as causalGraph from "../src/causal-graph.js";
 import type { RawVersion } from '../src/causal-graph.js'
@@ -11,12 +11,12 @@ import assert from 'node:assert/strict'
 import consoleLib from 'console'
 
 interface Doc {
-  oplog: SimpleListOpLog<number>,
+  oplog: ListOpLog<number>,
   content: number[],
 }
 
 const createDoc = (): Doc => {
-  return { oplog: createSimpleOpLog(), content: [] }
+  return { oplog: createOpLog(), content: [] }
 }
 
 const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: number) => {

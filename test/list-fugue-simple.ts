@@ -54,6 +54,7 @@ export class ListFugueSimple<T> {
   readonly start: Element<T>;
   readonly end: Element<T>;
 
+  replicaId: string;
   counter = 0;
 
   /**
@@ -69,7 +70,6 @@ export class ListFugueSimple<T> {
   // much more simple.
   msgsInCausalOrder: Message<T>[] = []
 
-  replicaId: string
 
   constructor(replicaId: string) {
     this.replicaId = replicaId
@@ -105,9 +105,13 @@ export class ListFugueSimple<T> {
   }
 
   private insertOne(index: number, value: T) {
+    this.insertOneWithReplica(this.replicaId, this.counter, index, value)
+    this.counter++
+  }
+
+  insertOneWithReplica(replicaId: string, counter: number, index: number, value: T) {
     // insert generator.
-    const id = { sender: this.replicaId, counter: this.counter };
-    this.counter++;
+    const id = { sender: replicaId, counter };
     const leftOrigin = index === 0 ? this.start : this.getByIndex(index - 1);
     const rightOrigin = leftOrigin.right!;
     const msg: InsertMessage<T> = {

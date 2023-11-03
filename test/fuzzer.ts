@@ -6,6 +6,8 @@ import { ListOpLog, createOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch,
 import * as causalGraph from "../src/causal-graph.js";
 import type { RawVersion } from '../src/causal-graph.js'
 
+import {ListFugueSimple} from './list-fugue-simple.js'
+
 import seedRandom from 'seed-random'
 import assert from 'node:assert/strict'
 import consoleLib from 'console'
@@ -13,10 +15,18 @@ import consoleLib from 'console'
 interface Doc {
   oplog: ListOpLog<number>,
   content: number[],
+
+  // And to make sure our behaviour matches actual fugue, run the same operations with
+  // the reference fugue implementation to make sure the output is the same.
+  fugue: ListFugueSimple<number> | null
 }
 
 const createDoc = (): Doc => {
-  return { oplog: createOpLog(), content: [] }
+  return {
+    oplog: createOpLog(),
+    content: [],
+    fugue: new ListFugueSimple('_unused_')
+  }
 }
 
 const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: number) => {
@@ -25,6 +35,14 @@ const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: num
   doc.oplog.ops.push({ type: 'ins', pos, content })
 
   doc.content.splice(pos, 0, content)
+
+  if (doc.fugue != null) {
+    // This is incredibly dirty.
+    // doc.fugue.replicaId = agent
+    // doc.fugue.counter = seq
+    // doc.fugue.insert(pos, content)
+    doc.fugue.insertOneWithReplica(agent, seq, pos, content)
+  }
 }
 
 const docDelete = (doc: Doc, [agent, seq]: RawVersion, pos: number, len: number) => {
@@ -35,12 +53,22 @@ const docDelete = (doc: Doc, [agent, seq]: RawVersion, pos: number, len: number)
     doc.oplog.ops.push({ type: 'del', pos })
   }
   doc.content.splice(pos, len)
+
+  if (doc.fugue != null) {
+    // We don't need to set the replica state because of reasons.
+    doc.fugue.delete(pos, len)
+  }
 }
 
 const docCheck = (doc: Doc) => {
   causalGraph.checkCG(doc.oplog.cg)
   const expectedContent = checkoutSimple(doc.oplog)
   assert.deepEqual(expectedContent, doc.content)
+
+  if (doc.fugue) {
+    const fugueState = doc.fugue.toArray()
+    assert.deepEqual(fugueState, doc.content)
+  }
 }
 
 const docMergeInto = (dest: Doc, src: Doc) => {
@@ -53,6 +81,12 @@ const docMergeInto = (dest: Doc, src: Doc) => {
   mergeChangesIntoBranch(branch, dest.oplog)
   dest.content = branch.snapshot
   assert.deepEqual(branch.version, dest.oplog.cg.heads)
+
+  if (dest.fugue) {
+    dest.fugue.mergeFrom(src.fugue!)
+    // const fugueState = dest.fugue.toArray()
+    // assert.deepEqual(fugueState, dest.content)
+  }
 }
 
 const consumeSeqs = (rv: RawVersion, num = 1): RawVersion => {

@@ -10,10 +10,10 @@
 // $ node dist/simple/test.js
 
 import * as fs from 'node:fs'
-import * as causalGraph from "../causal-graph.js";
-import { LV, LVRange } from "../types.js";
+import * as causalGraph from "../src/causal-graph.js"
+import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { SimpleListOp, SimpleListOpLog, mergeString } from './index.js';
+import { SimpleListOp, SimpleListOpLog, mergeString } from '../src/index.js';
 
 import assert from 'node:assert/strict'
 import consoleLib from 'console'

@@ -18,8 +18,16 @@
 //
 // This library is used for its graph manipulation helper functions - like diff
 // and iterVersionsBetween.
-import * as causalGraph from "../causal-graph.js"
-import { assert, assertEq } from '../utils.js'
+import * as causalGraph from "./causal-graph.js"
+
+// ** A couple utility methods **
+function assert(expr: boolean, msg?: string) {
+  if (!expr) throw Error(msg != null ? `Assertion failed: ${msg}` : 'Assertion failed')
+}
+
+function assertEq<T>(a: T, b: T, msg?: string) {
+  if (a !== b) throw Error(`Assertion failed: ${a} !== ${b} ${msg ?? ''}`)
+}
 
 /**
  * Operations either insert new content at some position (index), or delete the item
@@ -95,6 +103,9 @@ export function mergeOplogInto<T>(dest: SimpleListOpLog<T>, src: SimpleListOpLog
   }
 }
 
+
+// *** Merging changes ***
+
 enum ItemState {
   NotYetInserted = -1,
   Inserted = 0,
@@ -127,18 +138,32 @@ interface Item {
 }
 
 interface EditContext {
-  // All the items in document order. This list is grow-only, and will be spliced()
-  // in as needed.
+  /**
+   * All the items in document order. This list is grow-only, and will be spliced()
+   * in as needed.
+   */
   items: Item[],
 
-  // When we delete something, we store the LV of the item that was deleted. This is
-  // used when items are un-deleted (and re-deleted).
-  // delTarget[del_lv] = target_lv.
+  /**
+   * When we delete something, we store the LV of the item that was deleted. This is
+   * used when items are un-deleted (and re-deleted).
+   * delTarget[del_lv] = target_lv.
+   */
   delTargets: number[],
 
-  // This is the same set of items as above, but this time indexed by LV. This is
-  // used to make it fast & easy to activate and deactivate items.
+  /**
+   * This is the same set of items as above, but this time indexed by LV. This is
+   * used to make it fast & easy to activate and deactivate items.
+   */
   itemsByLV: Item[],
+
+  /**
+   * Items in the EditContext have 2 version tags - curState and endState. These
+   * store the state at 2 different versions while we traverse the operations.
+   *
+   * This parameter stores the current version itself.
+   */
+  curVersion: number[],
 }
 
 function advance1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) {
@@ -279,7 +304,7 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
   // We've found the position. Insert where the cursor points.
 }
 
-function apply1<T>(ctx: EditContext, dest: T[], oplog: SimpleListOpLog<T>, opId: number) {
+function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: SimpleListOpLog<T>, opId: number) {
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[opId]
 
@@ -302,7 +327,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: SimpleListOpLog<T>, opId:
 
     // Delete it in the output.
     if (item.endState === ItemState.Inserted) {
-      dest.splice(cursor.endPos, 1)
+      if (snapshot) snapshot.splice(cursor.endPos, 1)
     }
 
     // And mark the item as deleted. For the curState, we can't get into a "double deletes"
@@ -353,7 +378,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: SimpleListOpLog<T>, opId:
     ctx.items.splice(cursor.idx, 0, newItem)
 
     // And finally, actually insert it in the resulting document.
-    dest.splice(cursor.endPos, 0, op.content!)
+    if (snapshot) snapshot.splice(cursor.endPos, 0, op.content!)
   }
 }
 
@@ -387,19 +412,29 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: SimpleListOpLog<T>) {
   }
 }
 
-export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
-  const ctx: EditContext = {
-    items: [],
-    delTargets: new Array(oplog.ops.length).fill(-1),
-    itemsByLV: new Array(oplog.ops.length).fill(null),
-  }
-
-  // The version we're currently at while processing
-  let curVersion: number[] = []
-
-  // The resulting document snapshot
-  const data: T[] = []
-
+/**
+ * Traverse and apply the operations in the oplog.
+ *
+ * This function runs the core merging logic, traversing the
+ * graph of changes and modifying 2 structures along the way:
+ * - The ctx.items will have fugue style items inserted, and their state
+ *   changed.
+ * - The passed in data array (document snapshot) will be modified.
+ *
+ * @param ctx The (in memory) editing context with fugue items at some state
+ * @param oplog The log of operations we're applying
+ * @param snapshot The document snapshot to modify. When the function returns,
+ * this contains the final document state.
+ * @param fromOp The index of the first operation to traverse over
+ * @param toOp The bound on the indexes to traverse over
+ */
+export function traverseAndApply<T>(
+  ctx: EditContext,
+  oplog: SimpleListOpLog<T>,
+  snapshot: T[] | null,
+  fromOp: number = 0,
+  toOp: number = causalGraph.nextLV(oplog.cg) // Same as oplog.ops.length.
+) {
   // What we need to do here is walk through all the operations
   // one by one. When we get to each operation, if the current version
   // is different from the operation's parents, we'll "move" to that
@@ -412,17 +447,14 @@ export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
   // But here I'll just process all the operations in the order we're
   // storing them in, since thats easier. And they're already stored in a
   // topologically sorted order.
-  for (const entry of causalGraph.iterVersionsBetween(oplog.cg, 0, causalGraph.nextLV(oplog.cg))) {
-    const {aOnly, bOnly} = causalGraph.diff(oplog.cg, curVersion, entry.parents)
+  for (const entry of causalGraph.iterVersionsBetween(oplog.cg, fromOp, toOp)) {
+    const {aOnly, bOnly} = causalGraph.diff(oplog.cg, ctx.curVersion, entry.parents)
 
     // The causal graph library run-length encodes everything.
     // These are all ranges of operations.
     const retreat = aOnly
     const advance = bOnly
     const consume = [entry.version, entry.vEnd] // Operations to apply.
-
-    // After processing these operations, we're at the last version in the range.
-    curVersion = [entry.vEnd - 1]
 
     // Retreat.
     // Note we're processing these in reverse order to make sure items
@@ -444,10 +476,25 @@ export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
     // Then apply the operation.
     const [start, end] = consume
     for (let lv = start; lv < end; lv++) {
-      apply1(ctx, data, oplog, lv)
+      apply1(ctx, snapshot, oplog, lv)
     }
+
+    // After processing these operations, we're at the last version in the range.
+    ctx.curVersion = [entry.vEnd - 1]
+  }
+}
+
+export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
+  const ctx: EditContext = {
+    items: [],
+    delTargets: new Array(oplog.ops.length).fill(-1),
+    itemsByLV: new Array(oplog.ops.length).fill(null),
+    curVersion: [],
   }
 
+  // The resulting document snapshot
+  const data: T[] = []
+  traverseAndApply(ctx, oplog, data)
   return data
 }
 

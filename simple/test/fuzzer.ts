@@ -1,10 +1,10 @@
 // Run with:
 // $ node dist/simple/fuzzer.js
 
-import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto } from './index.js'
+import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto } from '../src/index.js'
 
-import * as causalGraph from "../causal-graph.js";
-import { RawVersion } from '../types.js'
+import * as causalGraph from "../src/causal-graph.js";
+import type { RawVersion } from '../src/causal-graph.js'
 
 import seedRandom from 'seed-random'
 import assert from 'node:assert/strict'

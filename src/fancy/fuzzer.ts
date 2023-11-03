@@ -3,8 +3,8 @@ import seedRandom from 'seed-random'
 import { ListOpLog, ListOpType, createOpLog, localDelete, localInsert, mergeOplogInto } from './oplog.js'
 import { checkoutSimple, mergeChangesIntoBranch } from './merge.js'
 import consoleLib from 'console'
-import * as causalGraph from "./causal-graph.js";
-import { Branch, RawVersion } from './types.js'
+import * as causalGraph from "../causal-graph.js";
+import { Branch, RawVersion } from '../types.js'
 
 
 interface Doc {

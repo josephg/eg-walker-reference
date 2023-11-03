@@ -1,9 +1,9 @@
 // This file contains the code to find the final document state based on an oplog.
-import * as causalGraph from "./causal-graph.js"
-import { ID, ListFugueSimple } from "./list-fugue-simple.js"
+import * as causalGraph from "../causal-graph.js"
+import { ID, ListFugueSimple } from "../list-fugue-simple.js"
 import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
-import { Branch, LV, LVRange } from "./types.js"
-import { assert, assertEq } from './utils.js'
+import { Branch, LV, LVRange } from "../types.js"
+import { assert, assertEq } from '../utils.js'
 import {deepEqual} from 'node:assert/strict'
 
 enum ItemState {

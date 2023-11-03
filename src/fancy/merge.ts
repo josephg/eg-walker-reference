@@ -374,7 +374,10 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
       const rv = causalGraph.lvToRaw(oplog.cg, lv)
       return `[${rv[0]},${rv[1]}]`
     }
-    const value = item.endState === ItemState.Deleted ? null : oplog.ops[item.opId].content
+
+    const op = oplog.ops[item.opId]
+    if (op.type !== ListOpType.Ins) throw Error('Invalid state') // This avoids a typescript type error.
+    const value = item.endState === ItemState.Deleted ? null : op.content
 
     // let content = `${isLeftChild ? '/' : '\\'}${elt.value == null
     let content = `${value == null ? '.' : value} at ${lvToStr(item.opId)} (left ${lvToStr(item.originLeft)})`

@@ -1,6 +1,4 @@
 // An oplog is a collection of operations made by one or multiple users.
-//
-// This is intentionally not super optimized.
 
 import * as causalGraph from "../causal-graph.js";
 
@@ -9,10 +7,23 @@ export const enum ListOpType {
   Del = 1,
 }
 
-export interface ListOp<T = any> {
-  type: ListOpType,
+/**
+ * Operations either insert new content at some position (index), or delete the item
+ * at some position.
+ *
+ * Note the positions are normal array / string indexes, indexing into what the
+ * document looked like when the operation was created (at its parent version).
+ *
+ * Operations also have an ID (agent,seq pair) and a list of parent versions. In this
+ * implementation, the ID and parents are stored separately - in the causal graph.
+*/
+export type ListOp<T = any> = {
+  type: ListOpType.Ins,
   pos: number,
-  content?: T, // Required if the operation is an insert. Always a single item. (Eg 1 character).
+  content: T,
+} | {
+  type: ListOpType.Del,
+  pos: number,
 }
 
 export interface ListOpLog<T = any> {

@@ -1,7 +1,7 @@
 // Run with:
 // $ node dist/simple/test/fuzzer.js
 
-import { checkoutSimple, ListOpLog, createOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch } from '../src/index.js'
+import { ListOpLog, createOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch, checkoutSimple } from '../src/index.js'
 
 import * as causalGraph from "../src/causal-graph.js";
 import type { RawVersion } from '../src/causal-graph.js'
@@ -98,8 +98,6 @@ function fuzzer(seed: number) {
         // console.log('delete', pos, delLen)
         docDelete(doc, consumeSeqs(agent, delLen), pos, delLen)
       }
-
-      docCheck(doc) // EXPENSIVE
     }
 
     // Pick a random pair of documents and merge them
@@ -119,11 +117,10 @@ function fuzzer(seed: number) {
     }
   }
 
-  // And a final check: If we do a fresh checkout of each document,
-  // the content should match.
+  // And a final check: This will do a fresh checkout of each document,
+  // and check that the content matches.
   for (const doc of docs) {
-    const simpleContent = checkoutSimple(doc.oplog)
-    assert.deepEqual(doc.content, simpleContent)
+    docCheck(doc)
   }
 }
 

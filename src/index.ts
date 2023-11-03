@@ -77,6 +77,24 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
   }
 }
 
+/** Add an operation to the oplog. Content is required if the operation is an insert. */
+export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
+  const entry = causalGraph.addRaw(oplog.cg, id, 1, parents)
+  if (entry == null) return false // We already have this operation.
+
+  if (type === 'ins' && content === undefined) throw Error('Cannot add an insert operation with no content')
+  assertEq(entry.version, oplog.ops.length, 'Invalid state: oplog length and cg do not match')
+
+  const op: ListOp<T> = type === 'ins' ? {
+    type, pos, content: content!
+  } : {
+    type, pos
+  }
+
+  oplog.ops.push(op)
+  return true
+}
+
 /**
  * This function adds everything in the src oplog to dest.
  */
@@ -481,7 +499,12 @@ export function traverseAndApply<T>(
   }
 }
 
-export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
+export interface Branch<T = any> {
+  snapshot: T[],
+  version: number[]
+}
+
+export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
@@ -492,10 +515,18 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
   // The resulting document snapshot
   const snapshot: T[] = []
   traverseAndApply(ctx, oplog, snapshot)
-  return snapshot
+
+  return {
+    snapshot,
+    version: oplog.cg.heads.slice()
+  }
 }
 
-export function mergeString(oplog: ListOpLog<string>): string {
+export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
+  return checkout(oplog).snapshot
+}
+
+export function checkoutSimpleString(oplog: ListOpLog<string>): string {
   return checkoutSimple(oplog).join('')
 }
 
@@ -506,10 +537,6 @@ export function mergeString(oplog: ListOpLog<string>): string {
 // into a new document snapshot. This code will allow a branch (a snapshot
 // at some version) to be updated with new changes.
 
-export interface Branch<T = any> {
-  snapshot: T[],
-  version: number[]
-}
 
 export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>, mergeVersion: number[] = oplog.cg.heads) {
   // We have an existing checkout of a list document. We want to merge some new changes in the oplog into

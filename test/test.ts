@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as causalGraph from "../src/causal-graph.js"
 import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { ListOp, ListOpLog, mergeString } from '../src/index.js';
+import { ListOp, ListOpLog, checkoutSimpleString } from '../src/index.js';
 
 import assert from 'node:assert/strict'
 import consoleLib from 'console'
@@ -149,7 +149,7 @@ function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean) {
   if (verbose) console.log('processing', oplog.ops.length, 'ops...')
   const start = Date.now()
   let result = ''
-  for (let i = 0; i < 1; i++) result = mergeString(oplog)
+  for (let i = 0; i < 1; i++) result = checkoutSimpleString(oplog)
   const end = Date.now()
   // fs.writeFileSync('out.txt', result)
   // console.log('Wrote output to out.txt. Took', end - start, 'ms')

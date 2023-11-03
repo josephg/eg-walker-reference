@@ -7,7 +7,7 @@
 // Run this by first compiling:
 // $ npx tsc
 // Then:
-// $ node dist/simple/test.js
+// $ node dist/simple/test/test.js
 
 import * as fs from 'node:fs'
 import * as causalGraph from "../src/causal-graph.js"

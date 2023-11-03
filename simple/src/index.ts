@@ -1,11 +1,7 @@
 // This implements the core algorithm in as readable a form as I can manage.
 //
-// This code has some simplifications from the more full implementation:
-//
-// - There's no support here for merging new changes into a document snapshot
-//
-// And its missing "standard" performance optimizations I'd want from a real
-// library:
+// Its fully featured, but its missing "standard" performance optimizations I'd
+// want in a real library:
 //
 // - There's no run-length encoding (well, outside the causal-graph library).
 //   All operations are split into individual insert / deletes.
@@ -13,11 +9,12 @@
 //   better library will skip updating the CRDT when operations are fully ordered.
 // - The causal graph is traversed naively
 
-// But because I'm a bit lazy, I'm reusing the fancier causal graph implementation.
-// This implementation internally run-length encodes the causal graph in memory.
+// I say there's no run-length encoding. But because I'm a bit lazy, I'm reusing
+// the fancier causal graph implementation that I've made for other projects. This
+// CG implementation internally run-length encodes the causal graph in memory.
 //
-// This library is used for its graph manipulation helper functions - like diff
-// and iterVersionsBetween.
+// The causal graph library is used for its graph manipulation helper functions -
+// like diff and iterVersionsBetween.
 import * as causalGraph from "./causal-graph.js"
 
 // ** A couple utility methods **
@@ -493,11 +490,116 @@ export function checkoutSimple<T>(oplog: SimpleListOpLog<T>): T[] {
   }
 
   // The resulting document snapshot
-  const data: T[] = []
-  traverseAndApply(ctx, oplog, data)
-  return data
+  const snapshot: T[] = []
+  traverseAndApply(ctx, oplog, snapshot)
+  return snapshot
 }
 
 export function mergeString(oplog: SimpleListOpLog<string>): string {
   return checkoutSimple(oplog).join('')
+}
+
+
+// *** FANCY MERGING ***
+
+// The above checkout code will work when we want to process all operations
+// into a new document snapshot. This code will allow a branch (a snapshot
+// at some version) to be updated with new changes.
+
+export interface Branch<T = any> {
+  snapshot: T[],
+  version: number[]
+}
+
+export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: SimpleListOpLog<T>, mergeVersion: number[] = oplog.cg.heads) {
+  // We have an existing checkout of a list document. We want to merge some new changes in the oplog into
+  // our local branch.
+  //
+  // How do we do that?
+  //
+  // Obviously we could regenerate the branch from scratch - but:
+  // - That would be very slow
+  // - It would require reading all the old (existing) list operations - which we want to leave on disk
+  // - That approach wouldn't allow us to get the difference between old and new state, which is
+  //   important for updating cursor information and things like that.
+  //
+  // Ideally we only want to look at the new operations in the oplog and apply those. However,
+  // those new operations may be concurrent with operations we've already processed. In that case,
+  // we need to populate the items list with any potentially concurrent items.
+  //
+  // The strategy here looks like this:
+  // 1. Find the most recent common ancestor of the existing branch & changes we're merging
+  // 2. Re-iterate through the "conflicting set" of changes we've already merged to populate the items list
+  // 3. Process the new operations as normal, starting with the crdt items list we've just generated.
+
+  // First lets see what we've got. I'll divide the conflicting range into two groups:
+  // - The conflict set. (Stuff we've already processed that we need to process again).
+  // - The new operations we need to merge
+  const newOps: causalGraph.LVRange[] = []
+  const conflictOps: causalGraph.LVRange[] = []
+
+  let commonAncestor = causalGraph.findConflicting(oplog.cg, branch.version, mergeVersion, (span, flag) => {
+      // Note this visitor function visits these operations in reverse order.
+      const target = flag === causalGraph.DiffFlag.B ? newOps : conflictOps
+      // target.push(span)
+
+      let last
+      if (target.length > 0 && (last = target[target.length - 1])[0] === span[1]) {
+        last[0] = span[0]
+      } else {
+        target.push(span)
+      }
+  })
+  // newOps and conflictOps will be filled in in reverse order. Fix!
+  newOps.reverse(); conflictOps.reverse()
+
+  const ctx: EditContext = {
+    items: [],
+    delTargets: new Array(oplog.ops.length).fill(-1),
+    itemsByLV: new Array(oplog.ops.length).fill(null),
+    curVersion: commonAncestor,
+  }
+
+  // We need some placeholder items to correspond to the document as it looked at the commonAncestor state.
+  // The placeholderLength needs to be at least the size that the document was at the time. This is inefficient but simple.
+  // let conflictOpLen = conflictOps.reduce((sum, [start, end]) => sum + end - start, 0)
+  // const placeholderLength = branch.data.length + conflictOpLen
+  const placeholderLength = Math.max(...branch.version) + 1
+  // const placeholderLength = Math.max(...commonAncestor)
+  // Also we must not use IDs that will show up in the actual document.
+  // assert(placeholderLength <= Math.min(...commonAncestor))
+
+  for (let i = 0; i < placeholderLength; i++) {
+    const opId = i + 1e12
+    const item: Item = {
+      // TODO: Consider using some weird IDs here instead of normal numbers to make it clear.
+      // Right now these IDs are also used in ctx.itemsByLV, but if that becomes a Map instead it would work better.
+      opId,
+      curState: ItemState.Inserted,
+      endState: ItemState.Inserted,
+      originLeft: -1,
+      rightParent: -1,
+    }
+    ctx.items.push(item)
+    ctx.itemsByLV[opId] = item
+  }
+
+  // let ctxVersion = commonAncestor
+  for (const [start, end] of conflictOps) {
+    // console.log('conflict', start, end)
+    // While processing the conflicting ops, we don't pass the document state because we don't
+    // want the document to be modified yet. We're just building up the items in ctx.
+    traverseAndApply(ctx, oplog, null, start, end)
+  }
+
+  for (const [start, end] of newOps) {
+    // console.log('newOps', start, end)
+    // And now we update the branch.
+    // ctxVersion = walkBetween2(ctx, oplog, ctxVersion, start, end, branch.data)
+    traverseAndApply(ctx, oplog, branch.snapshot, start, end)
+  }
+
+  // Set the branch version to the union of the versions.
+  // We can't use ctxVersion since it will probably just be the last version we visited.
+  branch.version = causalGraph.findDominators(oplog.cg, [...branch.version, ...mergeVersion])
 }

@@ -1,7 +1,7 @@
 // Run with:
-// $ node dist/simple/fuzzer.js
+// $ node dist/simple/test/fuzzer.js
 
-import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto } from '../src/index.js'
+import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch } from '../src/index.js'
 
 import * as causalGraph from "../src/causal-graph.js";
 import type { RawVersion } from '../src/causal-graph.js'
@@ -21,7 +21,6 @@ const createDoc = (): Doc => {
 
 const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: number) => {
   // I'm not using the oplog localInsert function in order to control the sequence number we use.
-  // localInsert(doc.oplog, doc.agent, pos, content)
   causalGraph.add(doc.oplog.cg, agent, seq, seq+1, doc.oplog.cg.heads)
   doc.oplog.ops.push({ type: 'ins', pos, content })
 
@@ -45,8 +44,15 @@ const docCheck = (doc: Doc) => {
 }
 
 const docMergeInto = (dest: Doc, src: Doc) => {
+  const branch: Branch = {
+    snapshot: dest.content,
+    version: dest.oplog.cg.heads.slice()
+  }
+
   mergeOplogInto(dest.oplog, src.oplog)
-  dest.content = checkoutSimple(dest.oplog)
+  mergeChangesIntoBranch(branch, dest.oplog)
+  dest.content = branch.snapshot
+  assert.deepEqual(branch.version, dest.oplog.cg.heads)
 }
 
 const consumeSeqs = (rv: RawVersion, num = 1): RawVersion => {
@@ -111,6 +117,13 @@ function fuzzer(seed: number) {
       // console.log('a', a, 'b', b)
       assert.deepEqual(a.content, b.content)
     }
+  }
+
+  // And a final check: If we do a fresh checkout of each document,
+  // the content should match.
+  for (const doc of docs) {
+    const simpleContent = checkoutSimple(doc.oplog)
+    assert.deepEqual(doc.content, simpleContent)
   }
 }
 

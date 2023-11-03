@@ -1,8 +1,7 @@
 // Run with:
 // $ node dist/simple/fuzzer.js
 
-import { SimpleListOpLog, ListOpType, createSimpleOpLog, mergeOplogInto } from './oplog.js'
-import { checkoutSimple } from './merge.js'
+import { checkoutSimple, SimpleListOpLog, createSimpleOpLog, mergeOplogInto } from './index.js'
 
 import * as causalGraph from "../causal-graph.js";
 import { RawVersion } from '../types.js'
@@ -24,7 +23,7 @@ const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: num
   // I'm not using the oplog localInsert function in order to control the sequence number we use.
   // localInsert(doc.oplog, doc.agent, pos, content)
   causalGraph.add(doc.oplog.cg, agent, seq, seq+1, doc.oplog.cg.heads)
-  doc.oplog.ops.push({ type: ListOpType.Ins, pos, content })
+  doc.oplog.ops.push({ type: 'ins', pos, content })
 
   doc.content.splice(pos, 0, content)
 }
@@ -34,7 +33,7 @@ const docDelete = (doc: Doc, [agent, seq]: RawVersion, pos: number, len: number)
 
   causalGraph.add(doc.oplog.cg, agent, seq, seq+len, doc.oplog.cg.heads)
   for (let i = 0; i < len; i++) {
-    doc.oplog.ops.push({ type: ListOpType.Del, pos })
+    doc.oplog.ops.push({ type: 'del', pos })
   }
   doc.content.splice(pos, len)
 }

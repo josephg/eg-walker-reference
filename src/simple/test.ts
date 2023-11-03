@@ -13,8 +13,7 @@ import * as fs from 'node:fs'
 import * as causalGraph from "../causal-graph.js";
 import { LV, LVRange } from "../types.js";
 
-import { mergeString } from './merge.js';
-import { SimpleListOp, SimpleListOpLog, ListOpType } from './oplog.js';
+import { SimpleListOp, SimpleListOpLog, mergeString } from './index.js';
 
 import assert from 'node:assert/strict'
 import consoleLib from 'console'
@@ -64,11 +63,11 @@ function importDTOpLog(data: DTExport): SimpleListOpLog {
       if (delHere > 0) {
         for (let i = 0; i < delHere; i++) {
           // The deletes all happen at the same position.
-          ops.push({type: ListOpType.Del, pos})
+          ops.push({type: 'del', pos})
         }
       } else {
         for (const c of insContent) {
-          ops.push({type: ListOpType.Ins, pos, content: c})
+          ops.push({type: 'ins', pos, content: c})
           pos++
         }
       }
@@ -129,11 +128,11 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): SimpleListOpLog {
       if (delHere > 0) {
         for (let i = 0; i < delHere; i++) {
           // The deletes all happen at the same position.
-          ops.push({type: ListOpType.Del, pos})
+          ops.push({type: 'del', pos})
         }
       } else {
         for (const c of insContent) {
-          ops.push({type: ListOpType.Ins, pos, content: c})
+          ops.push({type: 'ins', pos, content: c})
           pos++
         }
       }

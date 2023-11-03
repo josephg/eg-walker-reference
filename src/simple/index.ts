@@ -13,17 +13,87 @@
 //   better library will skip updating the CRDT when operations are fully ordered.
 // - The causal graph is traversed naively
 
-// We use a simplified oplog from oplog.js with no run-length encoding:
-import { SimpleListOpLog, ListOpType } from "./oplog.js"
-
 // But because I'm a bit lazy, I'm reusing the fancier causal graph implementation.
 // This implementation internally run-length encodes the causal graph in memory.
 //
 // This library is used for its graph manipulation helper functions - like diff
 // and iterVersionsBetween.
 import * as causalGraph from "../causal-graph.js"
-
 import { assert, assertEq } from '../utils.js'
+
+/**
+ * Operations either insert new content at some position (index), or delete the item
+ * at some position.
+ *
+ * Note the positions are normal array / string indexes, indexing into what the
+ * document looked like when the operation was created (at its parent version).
+ *
+ * Operations also have an ID (agent,seq pair) and a list of parent versions. In this
+ * implementation, the ID and parents are stored separately - in the causal graph.
+*/
+export type SimpleListOp<T = any> = {
+  type: 'ins',
+  pos: number
+  content: T
+} | {
+  type: 'del',
+  pos: number,
+}
+
+export interface SimpleListOpLog<T = any> {
+  // The LV for each op is its index in this list.
+  ops: SimpleListOp<T>[],
+  cg: causalGraph.CausalGraph,
+}
+
+export function createSimpleOpLog<T = any>(): SimpleListOpLog<T> {
+  return {
+    ops: [],
+
+    // The causal graph stores the IDs (agent,seq) and parents for each
+    // of the operations.
+    cg: causalGraph.createCG()
+  }
+}
+
+export function localInsert<T>(oplog: SimpleListOpLog<T>, agent: string, pos: number, content: T) {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq+1, oplog.cg.heads)
+  oplog.ops.push({ type: 'ins', pos, content })
+}
+
+export function localDelete<T>(oplog: SimpleListOpLog<T>, agent: string, pos: number, len: number = 1) {
+  if (len === 0) throw Error('Invalid delete length')
+
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq+len, oplog.cg.heads)
+  for (let i = 0; i < len; i++) {
+    oplog.ops.push({ type: 'del', pos })
+  }
+}
+
+/**
+ * This function adds everything in the src oplog to dest.
+ */
+export function mergeOplogInto<T>(dest: SimpleListOpLog<T>, src: SimpleListOpLog<T>) {
+  let vs = causalGraph.summarizeVersion(dest.cg)
+  const [commonVersion, _remainder] = causalGraph.intersectWithSummary(src.cg, vs)
+  // `remainder` lists items in dest that are not in src. Not relevant!
+
+  // Now we need to get all the versions since commonVersion.
+  const ranges = causalGraph.diff(src.cg, commonVersion, src.cg.heads).bOnly
+
+  // Copy the missing CG entries.
+  const cgDiff = causalGraph.serializeDiff(src.cg, ranges)
+  causalGraph.mergePartialVersions(dest.cg, cgDiff)
+
+  // And copy the corresponding oplog entries.
+  for (const [start, end] of ranges) {
+    for (let i = start; i < end; i++) {
+      dest.ops.push(src.ops[i])
+    }
+  }
+}
 
 enum ItemState {
   NotYetInserted = -1,
@@ -76,10 +146,10 @@ function advance1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) 
 
   // For inserts, the item being reactivated is just the op itself. For deletes,
   // we need to look up the item in delTargets.
-  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[opId] : opId
+  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === ListOpType.Del) {
+  if (op.type === 'del') {
     assert(item.curState >= ItemState.Inserted, 'Invalid state - adv Del but item is ' + item.curState)
     assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
     item.curState++
@@ -92,10 +162,10 @@ function advance1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) 
 
 function retreat1<T>(ctx: EditContext, oplog: SimpleListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
-  const targetLV = op.type === ListOpType.Del ? ctx.delTargets[opId] : opId
+  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === ListOpType.Del) {
+  if (op.type === 'del') {
     // Undelete the item.
     assert(item.curState >= ItemState.Deleted, 'Retreat delete but item not currently deleted')
     assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
@@ -213,7 +283,7 @@ function apply1<T>(ctx: EditContext, dest: T[], oplog: SimpleListOpLog<T>, opId:
   // This integrates the op into the document. This code is copied from reference-crdts.
   const op = oplog.ops[opId]
 
-  if (op.type === ListOpType.Del) {
+  if (op.type === 'del') {
     // This is simple. We just need to mark the item as deleted and delete it from the output.
     const cursor = findByCurPos(ctx, op.pos)
     // Find the next item which we can actually delete.
@@ -306,7 +376,10 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: SimpleListOpLog<T>) {
       const rv = causalGraph.lvToRaw(oplog.cg, lv)
       return `[${rv[0]},${rv[1]}]`
     }
-    const value = item.endState === ItemState.Deleted ? null : oplog.ops[item.opId].content
+
+    const op = oplog.ops[item.opId]
+    if (op.type !== 'ins') throw Error('Invalid state') // This avoids a typescript type error.
+    const value = item.endState === ItemState.Deleted ? null : op.content
 
     let content = `${value == null ? '.' : value} at ${lvToStr(item.opId)} (left ${lvToStr(item.originLeft)})`
     content += ` right ${lvToStr(item.rightParent)}`

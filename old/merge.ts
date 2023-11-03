@@ -1,9 +1,8 @@
 // This file contains the code to find the final document state based on an oplog.
-import * as causalGraph from "../causal-graph.js"
-import { ID, ListFugueSimple } from "../list-fugue-simple.js"
+import * as causalGraph from "./causal-graph.js"
 import { ListOp, ListOpLog, ListOpType } from "./oplog.js"
-import { Branch, LV, LVRange } from "../types.js"
-import { assert, assertEq } from '../utils.js'
+import { Branch, LV, LVRange } from "./types.js"
+import { assert, assertEq } from './utils.js'
 import {deepEqual} from 'node:assert/strict'
 
 enum ItemState {
@@ -244,12 +243,12 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
   // We've found the position. Insert where the cursor points.
 }
 
-function apply1<T>(ctx: EditContext, dest: T[] | null, oplog: ListOpLog<T>, opId: number, fugue?: ListFugueSimple<T>) {
-  const opIdToFugueId = (id: number): ID | null => {
-    if (id === -1) return null
-    const rawId = causalGraph.lvToRaw(oplog.cg, id)
-    return { sender: rawId[0], counter: rawId[1] }
-  }
+function apply1<T>(ctx: EditContext, dest: T[] | null, oplog: ListOpLog<T>, opId: number) {
+  // const opIdToFugueId = (id: number): ID | null => {
+  //   if (id === -1) return null
+  //   const rawId = causalGraph.lvToRaw(oplog.cg, id)
+  //   return { sender: rawId[0], counter: rawId[1] }
+  // }
 
   // if (opId > 0 && opId % 10000 === 0) console.log(opId, '...')
 
@@ -286,12 +285,12 @@ function apply1<T>(ctx: EditContext, dest: T[] | null, oplog: ListOpLog<T>, opId
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
 
-    if (fugue != null) {
-      fugue.receivePrimitive({
-        type: 'delete',
-        id: opIdToFugueId(item.opId)!,
-      })
-    }
+    // if (fugue != null) {
+    //   fugue.receivePrimitive({
+    //     type: 'delete',
+    //     id: opIdToFugueId(item.opId)!,
+    //   })
+    // }
   } else {
     // Insert! This is much more complicated as we need to do the Yjs integration.
     const cursor = findByCurPos(ctx, op.pos)
@@ -339,18 +338,18 @@ function apply1<T>(ctx: EditContext, dest: T[] | null, oplog: ListOpLog<T>, opId
     // And finally, actually insert it in the resulting document.
     if (dest) dest.splice(cursor.endPos, 0, op.content!)
 
-    if (fugue != null) {
-      let leftId = opIdToFugueId(originLeft) ?? fugue.start.id
-      let rightId = opIdToFugueId(tempOriginRight) ?? fugue.end.id
-      // console.log('inserting', opIdToFugueId(opId), 'left', leftId, 'right', rightId)
-      fugue.receivePrimitive({
-        type: 'insert',
-        id: opIdToFugueId(opId)!,
-        leftOrigin: leftId,
-        rightOrigin: rightId,
-        value: op.content!
-      })
-    }
+    // if (fugue != null) {
+    //   let leftId = opIdToFugueId(originLeft) ?? fugue.start.id
+    //   let rightId = opIdToFugueId(tempOriginRight) ?? fugue.end.id
+    //   // console.log('inserting', opIdToFugueId(opId), 'left', leftId, 'right', rightId)
+    //   fugue.receivePrimitive({
+    //     type: 'insert',
+    //     id: opIdToFugueId(opId)!,
+    //     leftOrigin: leftId,
+    //     rightOrigin: rightId,
+    //     value: op.content!
+    //   })
+    // }
   }
 }
 
@@ -387,12 +386,12 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
   }
 }
 
-function walkBetween<T>(ctx: EditContext, oplog: ListOpLog<T>, data: T[] | null, fugue?: ListFugueSimple<T>) {
-  return walkBetween2(ctx, oplog, [], 0, causalGraph.nextLV(oplog.cg), data, fugue)
+function walkBetween<T>(ctx: EditContext, oplog: ListOpLog<T>, data: T[] | null) {
+  return walkBetween2(ctx, oplog, [], 0, causalGraph.nextLV(oplog.cg), data)
 }
 
 
-function walkBetween2<T>(ctx: EditContext, oplog: ListOpLog<T>, curLV: number[], vStart: number, vEnd: number, data: T[] | null, fugue?: ListFugueSimple<T>): LV[] {
+function walkBetween2<T>(ctx: EditContext, oplog: ListOpLog<T>, curLV: number[], vStart: number, vEnd: number, data: T[] | null): LV[] {
   if (data != null) assert(data.length <= ctx.items.length)
 
   // This function also needs to return the resulting version after doing this
@@ -426,14 +425,14 @@ function walkBetween2<T>(ctx: EditContext, oplog: ListOpLog<T>, curLV: number[],
     const [start, end] = consume
     for (let lv = start; lv < end; lv++) {
       // console.log('apply1', lv, oplog.ops[lv].type)
-      apply1(ctx, data, oplog, lv, fugue)
+      apply1(ctx, data, oplog, lv)
     }
   }
   return entry.value
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
-  const fugue = new ListFugueSimple<T>('_unused_')
+  // const fugue = new ListFugueSimple<T>('_unused_')
 
   const ctx: EditContext = {
     items: [],
@@ -442,7 +441,7 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
   }
 
   const data: T[] = []
-  walkBetween(ctx, oplog, data, fugue)
+  walkBetween(ctx, oplog, data)
 
   // Deep weird check.
   // const expectedData = ctx.items
@@ -452,16 +451,16 @@ export function checkoutSimple<T>(oplog: ListOpLog<T>): Branch<T> {
 
   // console.log(data, oplog.ops.map(op => op.content), ctx.items)
 
-  const fugueState = fugue.toArray()
-  try {
-    deepEqual(fugueState, data)
-  } catch (e) {
-    fugue.debugPrint()
-    console.log()
-    debugPrintCtx(ctx, oplog)
-    // console.log(ctx.items)
-    throw e
-  }
+  // const fugueState = fugue.toArray()
+  // try {
+  //   deepEqual(fugueState, data)
+  // } catch (e) {
+  //   fugue.debugPrint()
+  //   console.log()
+  //   debugPrintCtx(ctx, oplog)
+  //   // console.log(ctx.items)
+  //   throw e
+  // }
 
   // console.log(ctx.items)
   // fugue.debugPrint()

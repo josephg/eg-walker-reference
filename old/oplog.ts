@@ -1,6 +1,6 @@
 // An oplog is a collection of operations made by one or multiple users.
 
-import * as causalGraph from "../causal-graph.js";
+import * as causalGraph from "./causal-graph.js";
 
 export const enum ListOpType {
   Ins = 0,

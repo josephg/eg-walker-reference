@@ -1,10 +1,10 @@
 import * as fs from 'node:fs'
-import * as causalGraph from "../causal-graph.js";
-import { LV, LVRange, RawVersion } from "../types.js";
+import * as causalGraph from "./causal-graph.js";
+import { LV, LVRange, RawVersion } from "./types.js";
 // import { assert } from './utils.js';
 import { mergeString } from './merge.js';
 import assert from 'node:assert/strict'
-import { assertSorted } from '../utils.js';
+import { assertSorted } from './utils.js';
 import consoleLib from 'console'
 import {ListOp, ListOpLog, ListOpType} from './oplog.js'
 

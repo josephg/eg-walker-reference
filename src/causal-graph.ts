@@ -12,8 +12,16 @@
 
 import PriorityQueue from 'priorityqueuejs'
 import bs from 'binary-search'
-import {LV, LVRange, Pair, RawVersion, ROOT, ROOT_LV, VersionSummary} from './types.js'
-import { assert } from './utils.js'
+
+export interface VersionSummary {[agent: string]: [number, number][]}
+
+export type RawVersion = [agent: string, seq: number]
+
+/** Local version */
+export type LV = number
+
+/** Local version range. Range is [start, end). */
+export type LVRange = [start: number, end: number]
 
 const min2 = (a: number, b: number) => a < b ? a : b
 const max2 = (a: number, b: number) => a > b ? a : b
@@ -269,21 +277,6 @@ export const lvCmp = (cg: CausalGraph, a: LV, b: LV) => (
 //   return winner
 // }
 
-// Its gross that I want / need this, but its super convenient.
-export const tieBreakPairs = <T>(cg: CausalGraph, data: Pair<T>[]): Pair<T> => {
-  if (data.length === 0) throw Error('Cannot tie break from an empty set')
-  let winner = data.reduce((a, b) => {
-    // Its a bit inefficient doing this lookup multiple times for the winning item,
-    // but eh. The data set will almost always contain exactly 1 item anyway.
-    const rawA = lvToRaw(cg, a[0])
-    const rawB = lvToRaw(cg, b[0])
-
-    return rawVersionCmp(rawA, rawB) < 0 ? a : b
-  })
-
-  return winner
-}
-
 /**
  * Returns [seq, local version] for the new item (or the first item if num > 1).
  */
@@ -319,7 +312,6 @@ export const lvToRawWithParents = (cg: CausalGraph, v: LV): [string, number, LV[
 }
 
 export const lvToRaw = (cg: CausalGraph, v: LV): RawVersion => {
-  if (v === ROOT_LV) return ROOT
   const [e, offset] = findEntryContaining(cg, v)
   return [e.agent, e.seq + offset]
   // causalGraph.entries[localIndex]
@@ -334,14 +326,10 @@ export const lvToRawList = (cg: CausalGraph, parents: LV[] = cg.heads): RawVersi
 // )
 
 export const tryRawToLV = (cg: CausalGraph, agent: string, seq: number): LV | null => {
-  if (agent === 'ROOT') return ROOT_LV
-
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   return clientEntry?.version ?? null
 }
 export const rawToLV = (cg: CausalGraph, agent: string, seq: number): LV => {
-  if (agent === 'ROOT') return ROOT_LV
-
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   if (clientEntry == null) throw Error(`Unknown ID: (${agent}, ${seq})`)
   return clientEntry.version
@@ -669,7 +657,7 @@ export const diff = (cg: CausalGraph, a: LV[], b: LV[]): DiffResult => {
 
 /** Does frontier contain target? */
 export const versionContainsLV = (cg: CausalGraph, frontier: LV[], target: LV): boolean => {
-  if (target === ROOT_LV || frontier.includes(target)) return true
+  if (frontier.includes(target)) return true
 
   const queue = new PriorityQueue<number>()
   for (const v of frontier) if (v > target) queue.enq(v)
@@ -811,8 +799,6 @@ export function findConflicting(cg: CausalGraph, a: LV[], b: LV[], visit: (range
     let {v, flag} = queue.deq()
     // console.log('deq', v, flag)
     if (v.length === 0) return []
-
-    if (v[0] === ROOT_LV) throw Error('Should not happen')
 
     // Discard duplicate entries.
 
@@ -998,7 +984,8 @@ export function checkCG(cg: CausalGraph) {
   // There's a bunch of checks to put in here...
   for (let i = 0; i < cg.entries.length; i++) {
     const e = cg.entries[i]
-    assert(e.vEnd > e.version)
+    if (e.vEnd <= e.version) throw Error('Inverted versions in entry')
+    // assert(e.vEnd > e.version)
   }
 
   // TODO: Also check the entry sequence matches the mapping.

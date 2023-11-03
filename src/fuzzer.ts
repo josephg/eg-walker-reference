@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict'
 import seedRandom from 'seed-random'
 import { ListOpLog, ListOpType, createOpLog, localDelete, localInsert, mergeOplogInto } from './oplog.js'
-import { checkoutSimple } from './merge.js'
+import { checkoutSimple, mergeChangesIntoBranch } from './merge.js'
 import consoleLib from 'console'
 import * as causalGraph from "./causal-graph.js";
-import { RawVersion } from './types.js'
+import { Branch, RawVersion } from './types.js'
 
 
 interface Doc {
   oplog: ListOpLog<number>,
   content: number[],
   // agent: string,
+
+  // branch: Branch<number>,
 }
 
 const createDoc = (): Doc => {
@@ -42,10 +44,20 @@ const docCheck = (doc: Doc) => {
 }
 
 const docMergeInto = (dest: Doc, src: Doc) => {
+  const branch: Branch = {
+    data: dest.content,
+    version: dest.oplog.cg.heads.slice()
+  }
+
   mergeOplogInto(dest.oplog, src.oplog)
 
+
+  mergeChangesIntoBranch(branch, dest.oplog)
+  dest.content = branch.data
+
   // TODO: Use a fancier updating merge to reuse the existing content.
-  dest.content = checkoutSimple(dest.oplog).data
+  const simpleContent = checkoutSimple(dest.oplog).data
+  assert.deepEqual(dest.content, simpleContent)
 }
 
 const consumeSeqs = (rv: RawVersion, num = 1): RawVersion => {
@@ -126,5 +138,5 @@ function fuzzLots() {
 }
 
 // fuzzer(Number(process.env['SEED']) ?? 0)
-// fuzzer(3)
+// fuzzer(0)
 fuzzLots()

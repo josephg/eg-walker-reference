@@ -267,7 +267,7 @@ function conformance() {
   console.log('All tests pass!')
 }
 
-conformance()
+// conformance()
 
 const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
   const result = causalGraph.createCG()

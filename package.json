@@ -1,9 +1,10 @@
 {
   "name": "dt-simple",
   "version": "1.0.0",
-  "main": "index.js",
   "license": "MIT",
   "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "dependencies": {
     "binary-search": "^1.3.6",
     "priorityqueuejs": "^2.0.0"
@@ -14,5 +15,9 @@
     "@types/seed-random": "^2.2.3",
     "seed-random": "^2.2.0",
     "typescript": "^4.7.4"
+  },
+  "scripts": {
+    "test": "tsc && node dist/test/test.js && node dist/test/fuzzer.js",
+    "prepare": "rm -rf dist && tsc -p ."
   }
 }

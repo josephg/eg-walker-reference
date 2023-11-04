@@ -61,10 +61,13 @@ export function createOpLog<T = any>(): ListOpLog<T> {
   }
 }
 
-export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, content: T) {
+export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, ...content: T[]) {
   const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
-  causalGraph.add(oplog.cg, agent, seq, seq+1, oplog.cg.heads)
-  oplog.ops.push({ type: 'ins', pos, content })
+  causalGraph.add(oplog.cg, agent, seq, seq+content.length, oplog.cg.heads)
+  for (const val of content) {
+    oplog.ops.push({ type: 'ins', pos, content: val })
+    pos++ // Each successive insert happens at the next location.
+  }
 }
 
 export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
@@ -78,7 +81,7 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
 }
 
 /** Add an operation to the oplog. Content is required if the operation is an insert. */
-export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
+export function pushOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
   const entry = causalGraph.addRaw(oplog.cg, id, 1, parents)
   if (entry == null) return false // We already have this operation.
 
@@ -93,6 +96,10 @@ export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion,
 
   oplog.ops.push(op)
   return true
+}
+
+export function getLatestVersion<T>(oplog: ListOpLog<T>): causalGraph.RawVersion[] {
+  return causalGraph.lvToRawList(oplog.cg, oplog.cg.heads)
 }
 
 /**
@@ -502,6 +509,10 @@ export function traverseAndApply<T>(
 export interface Branch<T = any> {
   snapshot: T[],
   version: number[]
+}
+
+export function createEmptyBranch(): Branch<any> {
+  return { snapshot: [], version: [] }
 }
 
 export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {

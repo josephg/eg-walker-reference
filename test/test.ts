@@ -145,15 +145,17 @@ function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
   return {ops, cg}
 }
 
-function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean) {
+function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean, n: number = 1) {
   if (verbose) console.log('processing', oplog.ops.length, 'ops...')
   const start = Date.now()
   let result = ''
-  for (let i = 0; i < 1; i++) result = checkoutSimpleString(oplog)
-  const end = Date.now()
+  for (let i = 0; i < n; i++) result = checkoutSimpleString(oplog)
   // fs.writeFileSync('out.txt', result)
   // console.log('Wrote output to out.txt. Took', end - start, 'ms')
-  if (verbose) console.log('Generated output in', end - start, 'ms')
+
+  const time = Date.now() - start
+  if (verbose) console.log(`Generated output ${n} times in ${time} ms`)
+  if (verbose && n > 1) console.log(`(${time / n} ms per iteration)`)
 
   try {
     assert.equal(result, expectedResult)
@@ -178,7 +180,7 @@ function debugCheck() {
   const oplog = importDTOpLog(data)
 
   console.log('Replaying editing history from', filename)
-  check1(oplog, data.endContent, true)
+  check1(oplog, data.endContent, true, 1)
   console.log('OK!')
 }
 

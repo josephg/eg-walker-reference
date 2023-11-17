@@ -1,10 +1,10 @@
-# Fully Replayable Histories (reference implementation)
+# Replayable Event Graph (reference implementation)
 
-This is a simple reference implementation of Fully Replayable Histories: A new approach to collaborative editing.
+This is a simple reference implementation of a Replayable Event Graph: A new approach to collaborative editing.
 
-This codebase contains a sequence-FRH implementation based around the FUGUE sequence CRDT.
+This codebase contains a sequence-REG implementation based around the FUGUE sequence CRDT.
 
-Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), FRHs store an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
+Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), regs store an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
 
 In practice, this means operations look like this:
 
@@ -30,42 +30,42 @@ This algorithm was first created in the [diamond types](https://github.com/josep
 ## Usage example
 
 ```javascript
-import * as frh from 'reference-frh'
+import * as reg from 'reference-reg'
 
-const oplog1 = frh.createOpLog()
+const oplog1 = reg.createOpLog()
 
 // Insert 'h', 'i' from user1.
-frh.localInsert(oplog1, 'user1', 0, 'h', 'i')
-console.log(frh.checkoutSimpleString(oplog1)) // 'hi'
+reg.localInsert(oplog1, 'user1', 0, 'h', 'i')
+console.log(reg.checkoutSimpleString(oplog1)) // 'hi'
 
 // Users 1 and 2 concurrently insert A and B at the start of the document
-const oplog2 = frh.createOpLog() // In a new document
+const oplog2 = reg.createOpLog() // In a new document
 
-const v = frh.getLatestVersion(oplog2) // [] in this case.
-frh.pushOp(oplog2, ['user1', 0], v, 'ins', 0, 'A')
-frh.pushOp(oplog2, ['user2', 0], v, 'ins', 0, 'B')
+const v = reg.getLatestVersion(oplog2) // [] in this case.
+reg.pushOp(oplog2, ['user1', 0], v, 'ins', 0, 'A')
+reg.pushOp(oplog2, ['user2', 0], v, 'ins', 0, 'B')
 
 // Prints 'AB' - since fugue tie breaks by ordering by agent ID.
-console.log(frh.checkoutSimpleString(oplog2))
+console.log(reg.checkoutSimpleString(oplog2))
 
 // Now lets simulate the same thing using 2 oplogs.
-const oplogA = frh.createOpLog()
-frh.localInsert(oplogA, 'user1', 0, 'A')
+const oplogA = reg.createOpLog()
+reg.localInsert(oplogA, 'user1', 0, 'A')
 
-const oplogB = frh.createOpLog()
-frh.localInsert(oplogB, 'user2', 0, 'B')
+const oplogB = reg.createOpLog()
+reg.localInsert(oplogB, 'user2', 0, 'B')
 
 // The two users sync changes:
-frh.mergeOplogInto(oplogA, oplogB)
-frh.mergeOplogInto(oplogB, oplogA)
+reg.mergeOplogInto(oplogA, oplogB)
+reg.mergeOplogInto(oplogB, oplogA)
 
 // And now they both see AB.
-console.log(frh.checkoutSimpleString(oplogA)) // Also AB.
-console.log(frh.checkoutSimpleString(oplogB)) // Also AB.
+console.log(reg.checkoutSimpleString(oplogA)) // Also AB.
+console.log(reg.checkoutSimpleString(oplogB)) // Also AB.
 
 // Finally lets make a branch and update it.
-const branch = frh.createEmptyBranch()
-frh.mergeChangesIntoBranch(branch, oplogA)
+const branch = reg.createEmptyBranch()
+reg.mergeChangesIntoBranch(branch, oplogA)
 console.log(branch.snapshot) // ['A', 'B'].
 ```
 
@@ -73,7 +73,7 @@ console.log(branch.snapshot) // ['A', 'B'].
 
 ## Reference implementation
 
-This directory contains a simple implementation of a FRH collaborative editing
+This directory contains a simple implementation of a reg collaborative editing
 object for sequences, built on top of Fugue.
 
 The code is split between two files:

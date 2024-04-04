@@ -1,8 +1,8 @@
-# Fully Replayable Histories (reference implementation)
+# Eg-walker (reference implementation)
 
-This is a simple reference implementation of Fully Replayable Histories: A new approach to collaborative editing.
+This is a simple reference implementation of the event graph walker algorithm: A new approach to collaborative editing in text and sequence data. (See upcoming paper for details).
 
-This codebase contains a sequence-FRH implementation based around the FUGUE sequence CRDT.
+This implementation is based around the yjsmod sequence CRDT. Which is to say, the resulting document order should match yjsmod. We believe this algorithm is isomorphic to FugueMax.
 
 Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), FRHs store an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
 

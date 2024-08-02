@@ -51,7 +51,7 @@ export interface ITContent<V> {
 
   at_offset(val: V, offset: number): V
 
-  eq(val: V, other: V, upto_len: number): boolean
+  // eq(val: V, other: V, upto_len: number): boolean
 
   default(): V
 }
@@ -239,7 +239,7 @@ function leaf_remove_children<V>(leaves: Leaves<V>, leaf_idx: number, del_start:
 
 
 function node_is_full(nodes: Nodes, idx: number): boolean {
-  return nodes.child_indexes[NODE_CHILDREN * idx] - 1 != NULL_IDX
+  return nodes.child_indexes[NODE_CHILDREN * (idx + 1) - 1] != NULL_IDX
 }
 
 function node_remove_children(nodes: Nodes, idx: number, del_start: number, del_end: number) {
@@ -312,7 +312,7 @@ function split_node<V>(tree: IndexTree<V>, old_idx: NodeIdx, children_are_leaves
 
   // Clear old_node[split..].
   tree.nodes.keys.fill(MAX_BOUND, old_base + NODE_SPLIT_POINT, old_base + NODE_CHILDREN)
-  tree.nodes.child_indexes.fill(MAX_BOUND, old_base + NODE_SPLIT_POINT, old_base + NODE_CHILDREN)
+  tree.nodes.child_indexes.fill(NULL_IDX, old_base + NODE_SPLIT_POINT, old_base + NODE_CHILDREN)
   // old_node.children[NODE_SPLIT_POINT..].fill(EMPTY_NODE_CHILD);
 
   // Update parent pointer for our children.
@@ -347,7 +347,7 @@ function insert_into_node<V>(tree: IndexTree<V>, node_idx: NodeIdx, new_child_ke
   // let mut node = &mut self[node_idx];
 
   // Where will the child go? I wonder if the compiler can do anything smart with this...
-  let insert_pos = tree.nodes.child_indexes.indexOf(after_child) + 1
+  let insert_pos = find_child_idx_in_node(tree.nodes, node_idx, after_child) + 1
   assert(insert_pos > 0) // indexOf returns -1 if the item is not found. In that case, throw.
 
   // println!("insert_into_node n={:?} after_child {after_child} pos {insert_pos}, new_child {:?}", node_idx, new_child);
@@ -373,7 +373,7 @@ function insert_into_node<V>(tree: IndexTree<V>, node_idx: NodeIdx, new_child_ke
 
   if (insert_pos === 0) {
     let parent = tree.nodes.parents[node_idx]
-    recursively_update_nodes(tree, parent, node_idx, new_child_idx);
+    recursively_update_nodes(tree, parent, node_idx, new_child_key);
   }
 
   return node_idx
@@ -473,7 +473,7 @@ function find_child_idx_in_node(nodes: Nodes, node_idx: NodeIdx, child: number):
   const base = node_idx * NODE_CHILDREN;
   let idx = nodes.child_indexes.indexOf(child, node_idx * NODE_CHILDREN)
   assert(idx >= base && idx < base + NODE_CHILDREN)
-  return idx
+  return idx - base
 }
 
 function find_in_leaf<V>(leaves: Leaves<V>, leaf_idx: LeafIdx, needle: LV): number {
@@ -496,6 +496,19 @@ function leaf_upper_bound<V>(leaves: Leaves<V>, leaf_idx: LeafIdx): LV {
     : leaves.bounds[next_leaf_idx * LEAF_CHILDREN]
 }
 
+function elem_upper_bound<V>(leaves: Leaves<V>, leaf_idx: LeafIdx, elem_idx: number): LV {
+  elem_idx++
+  let leaf_base = leaf_idx * LEAF_CHILDREN
+
+  if (elem_idx < LEAF_CHILDREN) {
+    let b = leaves.bounds[leaf_base + elem_idx]
+    if (b !== MAX_BOUND) return b
+  }
+
+  // Otherwise grab the upper bound of the leaf.
+  return leaf_upper_bound(leaves, leaf_idx)
+}
+
 
 // *** Cursor functions ***
 
@@ -504,11 +517,7 @@ function check_cursor_at<V>(tree: IndexTree<V>, cursor: IndexCursor, lv: LV, at_
   DEV: {
     const leaf_base = cursor.leaf_idx * LEAF_CHILDREN
     const lower_bound = tree.leaves.bounds[leaf_base + cursor.elem_idx]
-
-    const next = cursor.elem_idx + 1
-    const upper_bound = next < LEAF_CHILDREN && tree.leaves.bounds[leaf_base + next] !== MAX_BOUND
-      ? tree.leaves.bounds[leaf_base + next]
-      : leaf_upper_bound(tree.leaves, cursor.leaf_idx)
+    const upper_bound = elem_upper_bound(tree.leaves, cursor.leaf_idx, cursor.elem_idx)
 
     assert(lv >= lower_bound);
 
@@ -878,7 +887,7 @@ function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: n
 
   let leaves = tree.leaves
   let l_upper_bound = leaf_upper_bound(leaves, leaf_idx)
-  const leaf_base = leaf_idx * LEAF_CHILDREN;
+  let leaf_base = leaf_idx * LEAF_CHILDREN;
 
   assertNe(leaves.bounds[leaf_base + elem_idx], MAX_BOUND);
   assert(start >= leaves.bounds[leaf_base] || leaf_idx === 0);
@@ -931,7 +940,7 @@ function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: n
   if (end < cur_end) {
     // Try to append the end of the current element.
     assertNe(leaves.bounds[leaf_base + elem_idx], MAX_BOUND)
-    let rem = at_offset(leaves.values[leaf_base + elem_idx], end - start)
+    let rem = at_offset(leaves.values[leaf_base + elem_idx], end - cur_start)
     if (try_append(data, end - start, rem, cur_end - end)) {
       // Nice. We'll handle this in the special case below.
       end = cur_end;
@@ -1016,9 +1025,12 @@ function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: n
         throw new Error("I don't think this can happen");
       } else {
         // We've trimmed this leaf node. Roll the cursor to the next item.
+        //
+        // TODO: If we're not at the end of this node, we could also just insert the item here.
         leaf_idx = leaves.next_leaves[leaf_idx];
         l_upper_bound = leaf_upper_bound(leaves, leaf_idx);
         elem_idx = 0;
+        leaf_base = leaf_idx * LEAF_CHILDREN
 
         // We're going to replace the leaf's starting item.
         recursively_update_nodes(tree, leaves.parents[leaf_idx], leaf_idx, start);
@@ -1113,7 +1125,7 @@ export function it_count_items<V>(tree: IndexTree<V>): number {
 function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
   const leaves = tree.leaves
   let leaf_idx = first_leaf(tree)
-  let prev_val: V | undefined = undefined
+  let prev_val: V | undefined
   let prev_bound = 0
 
   while (leaf_idx !== NULL_IDX) {
@@ -1121,40 +1133,73 @@ function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
     // const start = leaves.bounds[leaf_base + elem_idx];
 
     for (let i = 0; i < LEAF_CHILDREN; i++) {
-      let bound = leaves.bounds[leaf_base + i]
-      if (bound == MAX_BOUND) break;
+      let lower_bound = leaves.bounds[leaf_base + i]
+      if (lower_bound == MAX_BOUND) break;
+      let upper_bound = elem_upper_bound(tree.leaves, leaf_idx, i)
+      let new_val = leaves.values[leaf_base + i]
 
-      if (prev_val !== undefined) {
-        yield { start: prev_bound, end: bound, val: prev_val }
+      if (prev_val === undefined || !tree.content_funcs.try_append(prev_val, lower_bound - prev_bound, new_val, upper_bound - lower_bound)) {
+        // Yield the previous element.
+        if (prev_val !== undefined) yield { start: prev_bound, end: lower_bound, val: prev_val }
+        prev_bound = lower_bound
+        prev_val = new_val
       }
-      prev_bound = bound
-      prev_val = leaves.values[leaf_base + i]
     }
 
     leaf_idx = leaves.next_leaves[leaf_idx]
   }
 
-  if (prev_val !== undefined) {
-    yield { start: prev_bound, end: MAX_BOUND, val: prev_val }
-  }
+  if (prev_val !== undefined) yield { start: prev_bound, end: MAX_BOUND, val: prev_val }
 }
+
+// function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
+//   const leaves = tree.leaves
+//   let leaf_idx = first_leaf(tree)
+//   let prev_val: V | undefined = undefined
+//   let prev_bound = 0
+
+//   while (leaf_idx !== NULL_IDX) {
+//     const leaf_base = leaf_idx * LEAF_CHILDREN;
+//     // const start = leaves.bounds[leaf_base + elem_idx];
+
+//     for (let i = 0; i < LEAF_CHILDREN; i++) {
+//       let bound = leaves.bounds[leaf_base + i]
+//       if (bound == MAX_BOUND) break;
+
+//       let new_val = leaves.values[leaf_base + i]
+//       if (prev_val !== undefined) {
+//         // if (tree.content_funcs.try_append(prev_val, bound - prev_bound, new_val,
+//         yield { start: prev_bound, end: bound, val: prev_val }
+//       }
+
+//       prev_bound = bound
+//       prev_val = new_val
+//     }
+
+//     leaf_idx = leaves.next_leaves[leaf_idx]
+//   }
+
+//   if (prev_val !== undefined) {
+//     yield { start: prev_bound, end: MAX_BOUND, val: prev_val }
+//   }
+// }
 
 
 // *** Debug checking
 
-function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expect_start: LV | null, expect_parent: NodeIdx): void {
+function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expect_start: LV | null, expect_parent: NodeIdx, expect_next_leaf: LeafIdx): LeafIdx {
   if (height > 0) {
     // Visiting a node.
     assert(idx < tree.nodes.parents.length)
     const node_base = idx * NODE_CHILDREN;
 
-    assert(tree.nodes.parents[idx] === expect_parent);
+    assertEq(tree.nodes.parents[idx], expect_parent);
 
     // The first child must be in use.
-    assert(tree.nodes.child_indexes[node_base] !== NULL_IDX);
+    assertNe(tree.nodes.child_indexes[node_base], NULL_IDX);
     // The first child must start at expect_start.
     if (expect_start !== null) {
-      assert(tree.nodes.keys[node_base] === expect_start);
+      assertEq(tree.nodes.keys[node_base], expect_start);
     }
 
     let finished = false;
@@ -1169,28 +1214,32 @@ function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expe
         assert(prev_start === MAX_BOUND || prev_start < start, `prev_start ${prev_start} / start ${start}`);
         prev_start = start;
 
-        assert(finished === false);
-        dbg_check_walk(tree, child_idx, height - 1, start, idx);
+        assertEq(finished, false);
+        expect_next_leaf = dbg_check_walk(tree, child_idx, height - 1, start, idx, expect_next_leaf);
       }
     }
+    return expect_next_leaf
   } else {
     // Visiting a leaf.
     assert(idx < tree.leaves.parents.length);
+    assertEq(idx, expect_next_leaf)
     const leaf_base = idx * LEAF_CHILDREN;
 
-    assert(tree.leaves.parents[idx] === expect_parent);
+    assertEq(tree.leaves.parents[idx], expect_parent);
 
     // We check that the first child is in use below.
     if (tree.leaves.bounds[leaf_base] !== MAX_BOUND) {
       if (expect_start !== null) {
-        assert(tree.leaves.bounds[leaf_base] === expect_start);
+        assertEq(tree.leaves.bounds[leaf_base], expect_start);
       }
     }
+
+    return tree.leaves.next_leaves[idx]
   }
 }
 
 
-function it_dbg_check<V>(tree: IndexTree<V>): void {
+export function it_dbg_check<V>(tree: IndexTree<V>): void {
   // Invariants:
   // - All index markers point to the node which contains the specified item.
   // - Except for the root item, all leaves must have at least 1 data entry.
@@ -1201,55 +1250,58 @@ function it_dbg_check<V>(tree: IndexTree<V>): void {
   // 1. We walk the leaves by following next_leaf pointers in each leaf node
   // 2. We recursively walk the tree
 
-  // Walk the leaves.
-  let leaves_visited = 0;
-  let leaf_idx = first_leaf(tree);
-  while (true) {
-    const leaf_base = leaf_idx * LEAF_CHILDREN;
-    leaves_visited++;
+  DBG: {
+    // Walk the leaves.
+    // let leaves_visited = 0;
+    let leaf_idx = first_leaf(tree);
+    while (true) {
+      const leaf_base = leaf_idx * LEAF_CHILDREN;
+      // leaves_visited++;
 
-    if (leaf_idx === first_leaf(tree)) {
-      // First leaf. This can be empty - but only if the whole data structure is empty.
-      if (tree.leaves.bounds[leaf_base] === MAX_BOUND) {
-        assertEq(tree.leaves.next_leaves[leaf_idx], NULL_IDX);
-      }
-    } else {
-      assertNe(tree.leaves.bounds[leaf_base], MAX_BOUND, "Only the first leaf can be empty");
-    }
-
-    // Make sure the bounds are all sorted.
-    let prev = tree.leaves.bounds[leaf_base];
-    let finished = false;
-    for (let i = 1; i < LEAF_CHILDREN; i++) {
-      const b = tree.leaves.bounds[leaf_base + i];
-      if (b === MAX_BOUND) {
-        finished = true;
+      if (leaf_idx === first_leaf(tree)) {
+        // First leaf. This can be empty - but only if the whole data structure is empty.
+        if (tree.leaves.bounds[leaf_base] === MAX_BOUND) {
+          assertEq(tree.leaves.next_leaves[leaf_idx], NULL_IDX);
+        }
       } else {
-        assert(b > prev, `Bounds does not monotonically increase b=${tree.leaves.bounds.slice(leaf_base, leaf_base + LEAF_CHILDREN)}`);
-        prev = b;
-        assert(!finished, "All in-use children must come before all null children");
+        assertNe(tree.leaves.bounds[leaf_base], MAX_BOUND, "Only the first leaf can be empty");
       }
+
+      // Make sure the bounds are all sorted.
+      let prev = tree.leaves.bounds[leaf_base];
+      let finished = false;
+      for (let i = 1; i < LEAF_CHILDREN; i++) {
+        const b = tree.leaves.bounds[leaf_base + i];
+        if (b === MAX_BOUND) {
+          finished = true;
+        } else {
+          assert(b > prev, `Bounds does not monotonically increase b=${tree.leaves.bounds.slice(leaf_base, leaf_base + LEAF_CHILDREN)}`);
+          prev = b;
+          assert(!finished, "All in-use children must come before all null children");
+        }
+      }
+
+      if (leaf_is_last(tree.leaves, leaf_idx)) break;
+      const next_leaf_base = tree.leaves.next_leaves[leaf_idx] * LEAF_CHILDREN;
+      assert(tree.leaves.bounds[next_leaf_base] > prev);
+      leaf_idx = tree.leaves.next_leaves[leaf_idx];
     }
 
-    if (leaf_is_last(tree.leaves, leaf_idx)) break;
-    const next_leaf_base = tree.leaves.next_leaves[leaf_idx] * LEAF_CHILDREN;
-    assert(tree.leaves.bounds[next_leaf_base] > prev);
-    leaf_idx = tree.leaves.next_leaves[leaf_idx];
+    // assertEq(leaves_visited, tree.leaves.parents.length);
+
+    if (tree.height === 0) {
+      assert(tree.root < tree.leaves.parents.length);
+    } else {
+      assert(tree.root < tree.nodes.parents.length);
+    }
+
+    // And walk the tree structure in the nodes
+    let last_next = dbg_check_walk(tree, tree.root, tree.height, null, NULL_IDX, first_leaf(tree));
+    assertEq(last_next, NULL_IDX)
+
+    // Check the cursor
+    check_cursor_at(tree, tree.cursor, tree.cursor_key, false);
   }
-
-  assertEq(leaves_visited, tree.leaves.parents.length);
-
-  if (tree.height === 0) {
-    assert(tree.root < tree.leaves.parents.length);
-  } else {
-    assert(tree.root < tree.nodes.parents.length);
-  }
-
-  // And walk the tree structure in the nodes
-  dbg_check_walk(tree, tree.root, tree.height, null, NULL_IDX);
-
-  // Check the cursor
-  check_cursor_at(tree, tree.cursor, tree.cursor_key, false);
 }
 
 /*

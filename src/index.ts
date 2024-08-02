@@ -16,15 +16,8 @@
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
 import * as causalGraph from "./causal-graph.js"
-
-// ** A couple utility methods **
-function assert(expr: boolean, msg?: string) {
-  if (!expr) throw Error(msg != null ? `Assertion failed: ${msg}` : 'Assertion failed')
-}
-
-function assertEq<T>(a: T, b: T, msg?: string) {
-  if (a !== b) throw Error(`Assertion failed: ${a} !== ${b} ${msg ?? ''}`)
-}
+import {} from './index-tree.js'
+import {assert, assertEq} from './utils.js'
 
 /**
  * Operations either insert new content at some position (index), or delete the item

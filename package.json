@@ -8,15 +8,15 @@
   "homepage": "https://github.com/josephg/reference-frh",
   "author": "Joseph Gentle <me@josephg.com> (https://josephg.com/)",
   "dependencies": {
+    "@types/bun": "^1.1.6",
     "binary-search": "^1.3.6",
     "priorityqueuejs": "^2.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.8.9",
     "@types/priorityqueuejs": "^1.0.3",
     "@types/seed-random": "^2.2.3",
     "seed-random": "^2.2.0",
-    "typescript": "^4.7.4"
+    "typescript": "^5.5.4"
   },
   "files": [
     "dist/*",

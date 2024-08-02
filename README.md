@@ -1,8 +1,10 @@
-# Replayable Event Graph (reference implementation)
+# Eg-walker: Fast, small collaborative text / list editing
 
-This is a simple reference implementation of a Replayable Event Graph: A new approach to collaborative editing.
+This is a lightly optimised implementation of Replayable Event Graphs: A new approach to collaborative text editing.
 
-This codebase contains a sequence-REG implementation based around the FUGUE sequence CRDT.
+This codebase is based on the eg-walker reference implementation. It is fundamentally the same - but it contains several important optimisations that make the algorithm run much faster.
+
+
 
 Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), regs store an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
 

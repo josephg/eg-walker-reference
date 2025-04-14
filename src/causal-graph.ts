@@ -12,10 +12,11 @@
 
 import PriorityQueue from 'priorityqueuejs'
 import bs from 'binary-search'
+import { assert, pushRLEList } from './utils.js'
 
 export interface VersionSummary {[agent: string]: [number, number][]}
 
-export type RawVersion = [agent: string, seq: number]
+export type Id = [agent: string, seq: number]
 
 /** Local version */
 export type LV = number
@@ -43,50 +44,44 @@ type ClientEntry = {
   version: LV,
 }
 
-export interface CausalGraph {
+export interface CausalGraphInner {
   /** Current global version frontier */
   heads: LV[],
 
   /** Map from localversion -> rawversion */
   entries: CGEntry[],
 
-  /** Map from agent -> list of versions by that agent */
+  /** Map from agent -> list of versions by that agent. Entries sorted by seq. */
   agentToVersion: {[k: string]: ClientEntry[]},
 }
 
-export const createCG = (): CausalGraph => ({
+export const createCG = (): CausalGraphInner => ({
   heads: [],
   entries: [],
   agentToVersion: {},
 })
 
-const pushRLEList = <T>(list: T[], newItem: T, tryAppend: (a: T, b: T) => boolean) => {
-  if (list.length === 0 || !tryAppend(list[list.length - 1], newItem)) {
-    list.push(newItem)
-  }
-}
+// // This is a variant of pushRLEList when we aren't sure if the new item will actually
+// // be appended to the end of the list, or go in the middle!
+// const insertRLEList = <T>(list: T[], newItem: T, getKey: (e: T) => number, tryAppend: (a: T, b: T) => boolean) => {
+//   const newKey = getKey(newItem)
+//   if (list.length === 0 || newKey >= getKey(list[list.length - 1])) {
+//     // Common case. Just push the new entry to the end of the list like normal.
+//     pushRLEList(tryAppend, list, newItem)
+//   } else {
+//     // We need to splice the new entry in. Find the index of the previous entry...
+//     let idx = bs(list, newKey, (entry, needle) => getKey(entry) - needle)
+//     if (idx >= 0) throw Error('Invalid state - item already exists')
 
-// This is a variant of pushRLEList when we aren't sure if the new item will actually
-// be appended to the end of the list, or go in the middle!
-const insertRLEList = <T>(list: T[], newItem: T, getKey: (e: T) => number, tryAppend: (a: T, b: T) => boolean) => {
-  const newKey = getKey(newItem)
-  if (list.length === 0 || newKey >= getKey(list[list.length - 1])) {
-    // Common case. Just push the new entry to the end of the list like normal.
-    pushRLEList(list, newItem, tryAppend)
-  } else {
-    // We need to splice the new entry in. Find the index of the previous entry...
-    let idx = bs(list, newKey, (entry, needle) => getKey(entry) - needle)
-    if (idx >= 0) throw Error('Invalid state - item already exists')
+//     idx = ~idx // The destination index is the 2s compliment of the returned index.
 
-    idx = - idx - 1 // The destination index is the 2s compliment of the returned index.
-
-    // Try to append.
-    if (idx === 0 || !tryAppend(list[idx - 1], newItem)) {
-      // No good! Splice in.
-      list.splice(idx, 0, newItem)
-    }
-  }
-}
+//     // Try to append.
+//     if (idx === 0 || !tryAppend(list[idx - 1], newItem)) {
+//       // No good! Splice in.
+//       list.splice(idx, 0, newItem)
+//     }
+//   }
+// }
 
 const tryRangeAppend = (r1: LVRange, r2: LVRange): boolean => {
   if (r1[1] === r2[0]) {
@@ -116,7 +111,7 @@ export const advanceFrontier = (frontier: LV[], vLast: LV, parents: LV[]): LV[] 
   return sortVersions(f)
 }
 
-export const clientEntriesForAgent = (causalGraph: CausalGraph, agent: string): ClientEntry[] => (
+export const clientEntriesForAgent = (causalGraph: CausalGraphInner, agent: string): ClientEntry[] => (
   causalGraph.agentToVersion[agent] ??= []
 )
 
@@ -124,11 +119,11 @@ const lastOr = <T, V>(list: T[], f: (t: T) => V, def: V): V => (
   list.length === 0 ? def : f(list[list.length - 1])
 )
 
-export const nextLV = (cg: CausalGraph): LV => (
+export const nextLV = (cg: CausalGraphInner): LV => (
   lastOr(cg.entries, e => e.vEnd, 0)
 )
 
-export const nextSeqForAgent = (cg: CausalGraph, agent: string): number => {
+export const nextSeqForAgent = (cg: CausalGraphInner, agent: string): number => {
   const entries = cg.agentToVersion[agent]
   if (entries == null) return 0
   return entries[entries.length - 1].seqEnd
@@ -157,25 +152,29 @@ const tryAppendClientEntry = (a: ClientEntry, b: ClientEntry): boolean => {
   return canAppend
 }
 
-const findClientEntryRaw = (cg: CausalGraph, agent: string, seq: number): ClientEntry | null => {
-  const av = cg.agentToVersion[agent]
-  if (av == null) return null
-
-  const result = bs(av, seq, (entry, needle) => (
+/** Returns idx (0+) if exists. Otherwise returns ~idx. */
+const findAVIndex = (av: ClientEntry[], seq: number): number => (
+  bs(av, seq, (entry, needle) => (
     needle < entry.seq ? 1
       : needle >= entry.seqEnd ? -1
       : 0
   ))
+)
 
-  return result < 0 ? null : av[result]
+const findClientEntryRaw = (cg: CausalGraphInner, agent: string, seq: number): ClientEntry | null => {
+  const av = cg.agentToVersion[agent]
+  if (av == null) return null
+
+  const idx = findAVIndex(av, seq)
+  return idx < 0 ? null : av[idx]
 }
 
-const findClientEntry = (cg: CausalGraph, agent: string, seq: number): [ClientEntry, number] | null => {
+const findClientEntry = (cg: CausalGraphInner, agent: string, seq: number): [ClientEntry, number] | null => {
   const clientEntry = findClientEntryRaw(cg, agent, seq)
   return clientEntry == null ? null : [clientEntry, seq - clientEntry.seq]
 }
 
-const findClientEntryTrimmed = (cg: CausalGraph, agent: string, seq: number): ClientEntry | null => {
+const findClientEntryTrimmed = (cg: CausalGraphInner, agent: string, seq: number): ClientEntry | null => {
   const result = findClientEntry(cg, agent, seq)
   if (result == null) return null
 
@@ -187,7 +186,7 @@ const findClientEntryTrimmed = (cg: CausalGraph, agent: string, seq: number): Cl
   }
 }
 
-export const hasVersion = (cg: CausalGraph, agent: string, seq: number): boolean => (
+export const hasVersion = (cg: CausalGraphInner, agent: string, seq: number): boolean => (
   findClientEntryRaw(cg, agent, seq) != null
 )
 
@@ -196,7 +195,7 @@ export const hasVersion = (cg: CausalGraph, agent: string, seq: number): boolean
 // }
 
 /** Returns the first new version in the inserted set */
-export const addRaw = (cg: CausalGraph, id: RawVersion, len: number = 1, rawParents?: RawVersion[]): CGEntry | null => {
+export const addRemote = (cg: CausalGraphInner, id: Id, len: number = 1, rawParents?: Id[]): number => {
   const parents = rawParents != null
     ? rawToLVList(cg, rawParents)
     : cg.heads
@@ -204,31 +203,12 @@ export const addRaw = (cg: CausalGraph, id: RawVersion, len: number = 1, rawPare
   return add(cg, id[0], id[1], id[1]+len, parents)
 }
 
-/** Add an item to the causal graph. Unlike addRaw, this takes parents using LV[].
- *
- * Returns null if the entire span already exists in the causal graph.
- */
-export const add = (cg: CausalGraph, agent: string, seqStart: number, seqEnd: number, parents: LV[]): CGEntry | null => {
-  const version = nextLV(cg)
-
-  while (true) {
-    // Look for an equivalent existing entry in the causal graph starting at
-    // seq_start. We only add the parts of the that do not already exist in CG.
-
-    // The inserted items will either be the empty set or a range because of version semantics.
-    const existingEntry = findClientEntryTrimmed(cg, agent, seqStart)
-    // console.log(cg.agentToVersion[agent], seqStart, existingEntry)
-    if (existingEntry == null) break // Insert start..end.
-
-    if (existingEntry.seqEnd >= seqEnd) return null // The entire span was already inserted.
-
-    // Or trim and loop.
-    seqStart = existingEntry.seqEnd
-    parents = [existingEntry.version + (existingEntry.seqEnd - existingEntry.seq) - 1]
-  }
-
+// Internal method used by add. This just adds things to cg.entries and updates cg.heads.
+const internalAddToEntries = (cg: CausalGraphInner, version: LV, agent: string, seqStart: number, seqEnd: number, parents: LV[]): number => {
   const len = seqEnd - seqStart
+  assert(len > 0)
   const vEnd = version + len
+
   const entry: CGEntry = {
     version,
     vEnd,
@@ -239,27 +219,147 @@ export const add = (cg: CausalGraph, agent: string, seqStart: number, seqEnd: nu
   }
 
   // The entry list will remain ordered here in standard version order.
-  pushRLEList(cg.entries, entry, tryAppendEntries)
-  // But the agent entries may end up out of order, since we might get [b,0] before [b,1] if
-  // the same agent modifies two different branches. Hence, insertRLEList instead of pushRLEList.
-  insertRLEList(
-    clientEntriesForAgent(cg, agent),
-    { seq: seqStart, seqEnd, version },
-    e => e.seq,
-    tryAppendClientEntry
-  )
+  pushRLEList(tryAppendEntries, cg.entries, entry)
 
-  cg.heads = advanceFrontier(cg.heads, vEnd - 1, parents)
-  return entry
+  if (parents === cg.heads) {
+    // Short circuit optimisation.
+    cg.heads = [vEnd - 1]
+  } else {
+    cg.heads = advanceFrontier(cg.heads, vEnd - 1, parents)
+  }
+
+  return len
 }
 
-export const rawVersionCmp = ([a1, s1]: RawVersion, [a2, s2]: RawVersion) => (
+/** Add an item to the causal graph. Unlike addRaw, this takes parents using LV[].
+ *
+ * Returns the number of items actually added. This could be fewer than requested (or zero)
+ * if the causal graph already contains those elements.
+ */
+function add(cg: CausalGraphInner, agent: string, seqStart: number, seqEnd: number, parents: LV[] = cg.heads): number {
+  if (seqStart === seqEnd) return 0 // Nothing to do in this case. Immediately return.
+
+  const version = nextLV(cg)
+
+  // This is quite subtle. There's 3 cases here:
+  // 1. The new span is entirely known in the causal graph. Discard it.
+  // 2. The new span is entirely unknown in the causal graph. This is the most likely case.
+  //    Append all of it.
+  // 3. There's some overlap. The overlap must be at the start of the entry, because all of
+  //    each item's parents must be known.
+  let av = cg.agentToVersion[agent]
+  if (av) { // If av is null, we'll keep the whole thing.
+    let idx = findAVIndex(av, seqEnd - 1)
+
+    if (idx >= 0) return 0 // If we have the last seq, therefore we have the whole thing.
+
+    idx = ~idx // Idx is now the "target index" - or, where in the list the item would be inserted.
+    if (idx >= 1) {
+      let prev = av[idx - 1]
+
+      if (prev && prev.seqEnd >= seqStart) {
+        // We already have some of the changes.
+        assert(prev.seqEnd < seqEnd) // Invalid - We would have gotten a 0+ index in this case.
+
+        // Trim the inserted item.
+        seqStart = prev.seqEnd
+        // Parents = last item in previous entry.
+        const prevEndLV = prev.version + (prev.seqEnd - prev.seq)
+        parents = [prevEndLV - 1]
+
+        // If (and only if) the versions match up, we can just extend the existing entry.
+        if (prev.version + (prev.seqEnd - prev.seq) === version) {
+          prev.seqEnd = seqEnd
+
+          // Insert the CGEntry and update heads and we're done.
+          return internalAddToEntries(cg, version, agent, seqStart, seqEnd, parents)
+        }
+      }
+    }
+
+    // Otherwise splice in at destination index. Note seqStart may be trimmed.
+    av.splice(idx, 0, {
+      seq: seqStart,
+      seqEnd,
+      version
+    })
+  } else {
+    // av = cg.agentToVersion[agent] = []
+    cg.agentToVersion[agent] = [{
+      seq: seqStart, seqEnd, version
+    }]
+  }
+
+  return internalAddToEntries(cg, version, agent, seqStart, seqEnd, parents)
+}
+// /** Add an item to the causal graph. Unlike addRaw, this takes parents using LV[].
+//  *
+//  * Returns null if the entire span already exists in the causal graph.
+//  */
+// function add(cg: CausalGraphInner, agent: string, seqStart: number, seqEnd: number, parents: LV[] = cg.heads): LVRange | null {
+//   if (seqStart === seqEnd) return null // Nothing to do in this case. Immediately return.
+
+//   const version = nextLV(cg)
+
+//   // This is quite subtle. There's 3 cases here:
+//   // 1. The new span is entirely known in the causal graph. Discard it.
+//   // 2. The new span is entirely unknown in the causal graph. This is the most likely case.
+//   //    Append all of it.
+//   // 3. There's some overlap. The overlap must be at the start of the entry, because all of
+//   //    each item's parents must be known.
+//   let av = cg.agentToVersion[agent]
+//   if (av) { // If av is null, we'll keep the whole thing.
+//     let idx = findAVIndex(av, seqEnd - 1)
+
+//     if (idx >= 0) return null // If we have the last seq, therefore we have the whole thing.
+
+//     idx = ~idx // Idx is now the "target index" - or, where in the list the item would be inserted.
+//     if (idx >= 1) {
+//       let prev = av[idx - 1]
+
+//       if (prev && prev.seqEnd >= seqStart) {
+//         // We already have some of the changes.
+//         assert(prev.seqEnd < seqEnd) // Invalid - We would have gotten a 0+ index in this case.
+
+//         // Trim the inserted item.
+//         seqStart = prev.seqEnd
+//         // Parents = last item in previous entry.
+//         const prevEndLV = prev.version + (prev.seqEnd - prev.seq)
+//         parents = [prevEndLV - 1]
+
+//         // If (and only if) the versions match up, we can just extend the existing entry.
+//         if (prev.version + (prev.seqEnd - prev.seq) === version) {
+//           prev.seqEnd = seqEnd
+
+//           // Insert the CGEntry and update heads and we're done.
+//           return internalAddToEntries(cg, version, agent, seqStart, seqEnd, parents)
+//         }
+//       }
+//     }
+
+//     // Otherwise splice in at destination index. Note seqStart may be trimmed.
+//     av.splice(idx, 0, {
+//       seq: seqStart,
+//       seqEnd,
+//       version
+//     })
+//   } else {
+//     // av = cg.agentToVersion[agent] = []
+//     cg.agentToVersion[agent] = [{
+//       seq: seqStart, seqEnd, version
+//     }]
+//   }
+
+//   return internalAddToEntries(cg, version, agent, seqStart, seqEnd, parents)
+// }
+
+export const rawVersionCmp = ([a1, s1]: Id, [a2, s2]: Id) => (
   a1 < a2 ? -1
     : a1 > a2 ? 1
     : s1 - s2
 )
 
-export const lvCmp = (cg: CausalGraph, a: LV, b: LV) => (
+export const lvCmp = (cg: CausalGraphInner, a: LV, b: LV) => (
   rawVersionCmp(lvToRaw(cg, a), lvToRaw(cg, b))
 )
 
@@ -280,7 +380,7 @@ export const lvCmp = (cg: CausalGraph, a: LV, b: LV) => (
 /**
  * Returns [seq, local version] for the new item (or the first item if num > 1).
  */
-export const assignLocal = (cg: CausalGraph, agentId: string, seq: number, parents: LV[] = cg.heads, num: number = 1): LV => {
+export const assignLocal = (cg: CausalGraphInner, agentId: string, seq: number, parents: LV[] = cg.heads, num: number = 1): LV => {
   let version = nextLV(cg)
   const av = clientEntriesForAgent(cg, agentId)
   const nextValidSeq = lastOr(av, ce => ce.seqEnd, 0)
@@ -290,7 +390,7 @@ export const assignLocal = (cg: CausalGraph, agentId: string, seq: number, paren
   return version
 }
 
-export const findEntryContainingRaw = (cg: CausalGraph, v: LV): CGEntry => {
+export const findEntryContainingRaw = (cg: CausalGraphInner, v: LV): CGEntry => {
   const idx = bs(cg.entries, v, (entry, needle) => (
     needle < entry.version ? 1
     : needle >= entry.vEnd ? -1
@@ -299,24 +399,24 @@ export const findEntryContainingRaw = (cg: CausalGraph, v: LV): CGEntry => {
   if (idx < 0) throw Error('Invalid or unknown local version ' + v)
   return cg.entries[idx]
 }
-export const findEntryContaining = (cg: CausalGraph, v: LV): [CGEntry, number] => {
+export const findEntryContaining = (cg: CausalGraphInner, v: LV): [CGEntry, number] => {
   const e = findEntryContainingRaw(cg, v)
   const offset = v - e.version
   return [e, offset]
 }
 
-export const lvToRawWithParents = (cg: CausalGraph, v: LV): [string, number, LV[]] => {
+export const lvToRawWithParents = (cg: CausalGraphInner, v: LV): [string, number, LV[]] => {
   const [e, offset] = findEntryContaining(cg, v)
   const parents = offset === 0 ? e.parents : [v-1]
   return [e.agent, e.seq + offset, parents]
 }
 
-export const lvToRaw = (cg: CausalGraph, v: LV): RawVersion => {
+export const lvToRaw = (cg: CausalGraphInner, v: LV): Id => {
   const [e, offset] = findEntryContaining(cg, v)
   return [e.agent, e.seq + offset]
   // causalGraph.entries[localIndex]
 }
-export const lvToRawList = (cg: CausalGraph, parents: LV[] = cg.heads): RawVersion[] => (
+export const lvToIdList = (cg: CausalGraphInner, parents: LV[] = cg.heads): Id[] => (
   parents.map(v => lvToRaw(cg, v))
 )
 
@@ -325,25 +425,25 @@ export const lvToRawList = (cg: CausalGraph, parents: LV[] = cg.heads): RawVersi
 //   localVersionToRaw(cg, v)[2]
 // )
 
-export const tryRawToLV = (cg: CausalGraph, agent: string, seq: number): LV | null => {
+export const tryRawToLV = (cg: CausalGraphInner, agent: string, seq: number): LV | null => {
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   return clientEntry?.version ?? null
 }
-export const rawToLV = (cg: CausalGraph, agent: string, seq: number): LV => {
+export const rawToLV = (cg: CausalGraphInner, agent: string, seq: number): LV => {
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   if (clientEntry == null) throw Error(`Unknown ID: (${agent}, ${seq})`)
   return clientEntry.version
 }
-export const rawToLV2 = (cg: CausalGraph, v: RawVersion): LV => (
+export const rawToLV2 = (cg: CausalGraphInner, v: Id): LV => (
   rawToLV(cg, v[0], v[1])
 )
 
-export const rawToLVList = (cg: CausalGraph, parents: RawVersion[]): LV[] => (
+export const rawToLVList = (cg: CausalGraphInner, parents: Id[]): LV[] => (
   parents.map(([agent, seq]) => rawToLV(cg, agent, seq))
 )
 
 //! Returns LV at start and end of the span.
-export const rawToLVSpan = (cg: CausalGraph, agent: string, seq: number): [LV, LV] => {
+export const rawToLVSpan = (cg: CausalGraphInner, agent: string, seq: number): [LV, LV] => {
 // export const rawToLVSpan = (cg: CausalGraph, agent: string, seq: number): [LV, number] => {
   const e = findClientEntry(cg, agent, seq)
   if (e == null) throw Error(`Unknown ID: (${agent}, ${seq})`)
@@ -353,7 +453,7 @@ export const rawToLVSpan = (cg: CausalGraph, agent: string, seq: number): [LV, L
   // return [entry.version + offset, entry.seqEnd - entry.seq - offset] // [start, len].
 }
 
-export const summarizeVersion = (cg: CausalGraph): VersionSummary => {
+export const summarizeVersion = (cg: CausalGraphInner): VersionSummary => {
   const result: VersionSummary = {}
   for (const k in cg.agentToVersion) {
     const av = cg.agentToVersion[k]
@@ -361,7 +461,7 @@ export const summarizeVersion = (cg: CausalGraph): VersionSummary => {
 
     const versions: [number, number][] = []
     for (const ce of av) {
-      pushRLEList(versions, [ce.seq, ce.seqEnd], tryRangeAppend)
+      pushRLEList(tryRangeAppend, versions, [ce.seq, ce.seqEnd])
     }
 
     result[k] = versions
@@ -369,7 +469,7 @@ export const summarizeVersion = (cg: CausalGraph): VersionSummary => {
   return result
 }
 
-const eachVersionBetween = (cg: CausalGraph, vStart: LV, vEnd: LV, visit: (e: CGEntry, vs: number, ve: number) => void) => {
+const eachVersionBetween = (cg: CausalGraphInner, vStart: LV, vEnd: LV, visit: (e: CGEntry, vs: number, ve: number) => void) => {
   let idx = bs(cg.entries, vStart, (entry, needle) => (
     needle < entry.version ? 1
     : needle >= entry.vEnd ? -1
@@ -387,7 +487,7 @@ const eachVersionBetween = (cg: CausalGraph, vStart: LV, vEnd: LV, visit: (e: CG
 }
 
 // Same as above, but as a generator. And generating a new CGEntry when we yield.
-export function *iterVersionsBetween(cg: CausalGraph, vStart: LV, vEnd: LV): Generator<CGEntry> {
+export function *iterVersionsBetween(cg: CausalGraphInner, vStart: LV, vEnd: LV): Generator<CGEntry> {
   if (vStart === vEnd) return
 
   let idx = bs(cg.entries, vStart, (entry, needle) => (
@@ -456,18 +556,18 @@ type IntersectVisitor = (agent: string, startSeq: number, endSeq: number, versio
 
 /**
  * Scan the VersionSummary and report (via visitor function) which versions overlap.
- * 
+ *
  * If you consider the venn diagram of versions, there are 3 categories:
  * - a (only known locally)
  * - a+b (common versions)
  * - b (only known remotely)
- * 
+ *
  * Currently this method:
  * - Ignores a only. Only a+b or b are yielded via the visitor
  * - For a+b, we yield the local version
  * - For b only, we yield a LV of -1.
  */
-const intersectWithSummaryFull = (cg: CausalGraph, summary: VersionSummary, visit: IntersectVisitor) => {
+const intersectWithSummaryFull = (cg: CausalGraphInner, summary: VersionSummary, visit: IntersectVisitor) => {
   for (const agent in summary) {
     const clientEntries = cg.agentToVersion[agent]
 
@@ -526,7 +626,7 @@ const intersectWithSummaryFull = (cg: CausalGraph, summary: VersionSummary, visi
 }
 
 /** Yields the intersection (most recent common version) and remainder (if any) */
-export const intersectWithSummary = (cg: CausalGraph, summary: VersionSummary, versionsIn: LV[] = []): [LV[], VersionSummary | null] => {
+export const intersectWithSummary = (cg: CausalGraphInner, summary: VersionSummary, versionsIn: LV[] = []): [LV[], VersionSummary | null] => {
   let remainder: null | VersionSummary = null
 
   const versions = versionsIn.slice()
@@ -559,7 +659,7 @@ type DiffResult = {
 }
 
 const pushReversedRLE = (list: LVRange[], start: LV, end: LV) => {
-  pushRLEList(list, [start, end] as [number, number], tryRevRangeAppend)
+  pushRLEList(tryRevRangeAppend, list, [start, end] as [number, number])
 }
 
 
@@ -570,7 +670,7 @@ export const enum DiffFlag { A=0, B=1, Shared=2 }
  * This method takes in two versions (expressed as frontiers) and returns the
  * set of operations only appearing in the history of one version or the other.
  */
-export const diff = (cg: CausalGraph, a: LV[], b: LV[]): DiffResult => {
+export const diff = (cg: CausalGraphInner, a: LV[], b: LV[]): DiffResult => {
   const flags = new Map<number, DiffFlag>()
 
   // Every order is in here at most once. Every entry in the queue is also in
@@ -656,7 +756,7 @@ export const diff = (cg: CausalGraph, a: LV[], b: LV[]): DiffResult => {
 
 
 /** Does frontier contain target? */
-export const versionContainsLV = (cg: CausalGraph, frontier: LV[], target: LV): boolean => {
+export const versionContainsLV = (cg: CausalGraphInner, frontier: LV[], target: LV): boolean => {
   if (frontier.includes(target)) return true
 
   const queue = new PriorityQueue<number>()
@@ -694,7 +794,7 @@ export const versionContainsLV = (cg: CausalGraph, frontier: LV[], target: LV): 
  *
  * The versions will be yielded from largest to smallest.
  */
-export function findDominators2(cg: CausalGraph, versions: LV[], cb: (v: LV, isDominator: boolean) => void) {
+export function findDominators2(cg: CausalGraphInner, versions: LV[], cb: (v: LV, isDominator: boolean) => void) {
   if (versions.length === 0) return
   else if (versions.length === 1) {
     cb(versions[0], true)
@@ -751,7 +851,7 @@ export function findDominators2(cg: CausalGraph, versions: LV[], cb: (v: LV, isD
   }
 }
 
-export function findDominators(cg: CausalGraph, versions: LV[]): LV[] {
+export function findDominators(cg: CausalGraphInner, versions: LV[]): LV[] {
   if (versions.length <= 1) return versions
   const result: LV[] = []
   findDominators2(cg, versions, (v, isDominator) => {
@@ -764,7 +864,7 @@ export const lvEq = (a: LV[], b: LV[]) => (
   a.length === b.length && a.every((val, idx) => b[idx] === val)
 )
 
-export function findConflicting(cg: CausalGraph, a: LV[], b: LV[], visit: (range: LVRange, flag: DiffFlag) => void): LV[] {
+export function findConflicting(cg: CausalGraphInner, a: LV[], b: LV[], visit: (range: LVRange, flag: DiffFlag) => void): LV[] {
   // dbg!(a, b);
 
   // Sorted highest to lowest (so we get the highest item first).
@@ -891,7 +991,7 @@ export function findConflicting(cg: CausalGraph, a: LV[], b: LV[], visit: (range
  * (a === b). Otherwise it returns 0 if the operations are concurrent,
  * -1 if a < b or 1 if b > a.
  */
-export const compareVersions = (cg: CausalGraph, a: LV, b: LV): number => {
+export const compareVersions = (cg: CausalGraphInner, a: LV, b: LV): number => {
   if (a > b) {
     return versionContainsLV(cg, [a], b) ? -1 : 0
   } else if (a < b) {
@@ -908,7 +1008,7 @@ type PartialSerializedCGEntry = {
   seq: number,
   len: number,
 
-  parents: RawVersion[]
+  parents: Id[]
 }
 
 export type PartialSerializedCG = PartialSerializedCGEntry[]
@@ -917,7 +1017,7 @@ export type PartialSerializedCG = PartialSerializedCGEntry[]
  * The entries returned from this function are in the order of versions
  * specified in ranges.
  */
-export function serializeDiff(cg: CausalGraph, ranges: LVRange[]): PartialSerializedCG {
+export function serializeDiff(cg: CausalGraphInner, ranges: LVRange[]): PartialSerializedCG {
   const entries: PartialSerializedCGEntry[] = []
   for (let [start, end] of ranges) {
     while (start != end) {
@@ -925,8 +1025,8 @@ export function serializeDiff(cg: CausalGraph, ranges: LVRange[]): PartialSerial
 
       const localEnd = min2(end, e.vEnd)
       const len = localEnd - start
-      const parents: RawVersion[] = offset === 0
-        ? lvToRawList(cg, e.parents)
+      const parents: Id[] = offset === 0
+        ? lvToIdList(cg, e.parents)
         : [[e.agent, e.seq + offset - 1]]
 
       entries.push({
@@ -944,32 +1044,32 @@ export function serializeDiff(cg: CausalGraph, ranges: LVRange[]): PartialSerial
 }
 
 //! The entries returned from this function are always in causal order.
-export function serializeFromVersion(cg: CausalGraph, v: LV[]): PartialSerializedCG {
+export function serializeFromVersion(cg: CausalGraphInner, v: LV[]): PartialSerializedCG {
   const ranges = diff(cg, v, cg.heads).bOnly
   return serializeDiff(cg, ranges)
 }
 
-export function mergePartialVersions(cg: CausalGraph, data: PartialSerializedCG): LVRange {
+export function mergePartialVersions(cg: CausalGraphInner, data: PartialSerializedCG): LVRange {
   const start = nextLV(cg)
 
   for (const {agent, seq, len, parents} of data) {
-    addRaw(cg, [agent, seq], len, parents)
+    addRemote(cg, [agent, seq], len, parents)
   }
   return [start, nextLV(cg)]
 }
 
-export function *mergePartialVersions2(cg: CausalGraph, data: PartialSerializedCG) {
+export function *mergePartialVersions2(cg: CausalGraphInner, data: PartialSerializedCG) {
   // const start = nextLV(cg)
 
   for (const {agent, seq, len, parents} of data) {
-    const newEntry = addRaw(cg, [agent, seq], len, parents)
+    const newEntry = addRemote(cg, [agent, seq], len, parents)
     if (newEntry != null) yield newEntry
   }
 
   // return [start, nextLV(cg)]
 }
 
-export function advanceVersionFromSerialized(cg: CausalGraph, data: PartialSerializedCG, version: LV[]): LV[] {
+export function advanceVersionFromSerialized(cg: CausalGraphInner, data: PartialSerializedCG, version: LV[]): LV[] {
   for (const {agent, seq, len, parents} of data) {
     const parentLVs = rawToLVList(cg, parents)
     const vLast = rawToLV(cg, agent, seq + len - 1)
@@ -980,7 +1080,7 @@ export function advanceVersionFromSerialized(cg: CausalGraph, data: PartialSeria
   return version
 }
 
-export function checkCG(cg: CausalGraph) {
+export function checkCG(cg: CausalGraphInner) {
   // There's a bunch of checks to put in here...
   for (let i = 0; i < cg.entries.length; i++) {
     const e = cg.entries[i]
@@ -990,3 +1090,68 @@ export function checkCG(cg: CausalGraph) {
 
   // TODO: Also check the entry sequence matches the mapping.
 }
+
+
+export class CausalGraph {
+  inner: CausalGraphInner
+
+  constructor() {
+    this.inner = createCG()
+  }
+
+  nextSeqForAgent(agent: string): number {
+    return nextSeqForAgent(this.inner, agent)
+  }
+
+  add(agent: string, seqStart: number, seqEnd: number, parents?: LV[]): number {
+    return add(this.inner, agent, seqStart, seqEnd, parents)
+  }
+
+  addRemote(id: Id, len: number = 1, rawParents?: Id[]): number {
+    return addRemote(this.inner, id, len, rawParents)
+  }
+
+  dbgCheck() {
+    checkCG(this.inner)
+  }
+
+  lvToIdList(frontier: LV[]) {
+    return lvToIdList(this.inner, frontier)
+  }
+
+  heads() {
+    return this.inner.heads
+  }
+
+  summarizeVersion() {
+    return summarizeVersion(this.inner)
+  }
+
+  serializeDiff(ranges: LVRange[]) {
+    return serializeDiff(this.inner, ranges)
+  }
+
+  mergePartialVersions(cgDiff: PartialSerializedCG) {
+    return mergePartialVersions(this.inner, cgDiff)
+  }
+
+
+  diff(a: LV[], b: LV[]) {
+    return diff(this.inner, a, b)
+  }
+
+  nextLV() {
+    return nextLV(this.inner)
+  }
+}
+
+
+
+
+
+// let cg = new CausalGraph()
+// cg.add('x', 0, 5, [])
+// cg.add('x', 4, 10, [123])
+
+// console.log(cg.inner.entries)
+// console.log(cg.inner.agentToVersion)

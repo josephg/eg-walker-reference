@@ -215,7 +215,7 @@ function conformance() {
 
 conformance()
 
-const trimCG = (cg: causalGraph.CausalGraph, n: number) => {
+const trimCG = (cg: causalGraph.CausalGraphInner, n: number) => {
   const result = causalGraph.createCG()
   for (let entry of cg.entries) {
     let len = entry.vEnd - entry.version

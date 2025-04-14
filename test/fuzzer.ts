@@ -4,7 +4,7 @@
 import { ListOpLog, createOpLog, mergeOplogInto, mergeChangesIntoBranch, Branch, checkoutSimple } from '../src/index.js'
 
 import * as causalGraph from "../src/causal-graph.js";
-import type { RawVersion } from '../src/causal-graph.js'
+import type { Id } from '../src/causal-graph.js'
 
 import {ListFugueSimple} from './list-fugue-simple.js'
 
@@ -29,7 +29,7 @@ const createDoc = (): Doc => {
   }
 }
 
-const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: number) => {
+const docInsert = (doc: Doc, [agent, seq]: Id, pos: number, content: number) => {
   // I'm not using the oplog localInsert function in order to control the sequence number we use.
   causalGraph.add(doc.oplog.cg, agent, seq, seq+1, doc.oplog.cg.heads)
   doc.oplog.ops.push({ type: 'ins', pos, content })
@@ -45,7 +45,7 @@ const docInsert = (doc: Doc, [agent, seq]: RawVersion, pos: number, content: num
   }
 }
 
-const docDelete = (doc: Doc, [agent, seq]: RawVersion, pos: number, len: number) => {
+const docDelete = (doc: Doc, [agent, seq]: Id, pos: number, len: number) => {
   if (len === 0) throw Error('Invalid delete length')
 
   causalGraph.add(doc.oplog.cg, agent, seq, seq+len, doc.oplog.cg.heads)
@@ -89,8 +89,8 @@ const docMergeInto = (dest: Doc, src: Doc) => {
   }
 }
 
-const consumeSeqs = (rv: RawVersion, num = 1): RawVersion => {
-  let result: RawVersion = [rv[0], rv[1]]
+const consumeSeqs = (rv: Id, num = 1): Id => {
+  let result: Id = [rv[0], rv[1]]
   rv[1] += num
   return result
 }
@@ -106,7 +106,7 @@ function fuzzer(seed: number) {
   const randBool = (weight: number = 0.5) => random() < weight
 
   const docs = [createDoc(), createDoc(), createDoc()]
-  const agents: RawVersion[] = [['a', 0], ['b', 0], ['c', 0]]
+  const agents: Id[] = [['a', 0], ['b', 0], ['c', 0]]
   const randDoc = () => docs[randInt(docs.length)]
 
   let nextItem = 0

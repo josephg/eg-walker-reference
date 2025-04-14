@@ -4,23 +4,17 @@
 // This is a run-length encodedm in-memory b-tree mapping from integer ranges to values.
 
 import { assert, assertEq, assertNe } from './utils.js'
+import {
+  NODE_CHILDREN,
+  LEAF_CHILDREN,
+  NODE_SPLIT_POINT,
+  LEAF_SPLIT_POINT,
+  LV,
+  LeafIdx,
+  NodeIdx,
+  NULL_IDX,
+} from './tree-common.js'
 
-// TODO: Increase these numbers in production mode.
-const NODE_CHILDREN = 4
-const LEAF_CHILDREN = 4
-
-const NODE_SPLIT_POINT = NODE_CHILDREN / 2
-const LEAF_SPLIT_POINT = LEAF_CHILDREN / 2
-
-// Type aliases just to make it a bit clearer what all the numbers represent.
-type LV = number
-type LeafIdx = number
-type NodeIdx = number
-
-/**
- * When we have a next pointer / parent pointer which does not exist, we use this sentinal value
- */
-const NULL_IDX = -1
 export const MAX_BOUND = Number.MAX_SAFE_INTEGER
 
 interface IndexTree<V> {
@@ -71,7 +65,7 @@ interface Leaves<V> {
   values: V[],
 
   // And in these, each leaf contains exactly 1 value.
-  next_leaves: number[],
+  next_leaves: LeafIdx[],
   parents: NodeIdx[],
 }
 
@@ -137,7 +131,7 @@ function pushNode(nodes: Nodes): number {
 }
 
 
-export function it_create<V>(funcs: ITContent<V>): IndexTree<V> {
+export function itCreate<V>(funcs: ITContent<V>): IndexTree<V> {
   // An index tree is never empty. We initialize a new tree with a single leaf node.
   let leaves: Leaves<V> = {
     bounds: [],
@@ -173,7 +167,7 @@ export function it_create<V>(funcs: ITContent<V>): IndexTree<V> {
   }
 }
 
-export function it_clear<V>(tree: IndexTree<V>) {
+export function itClear<V>(tree: IndexTree<V>) {
   tree.leaves.bounds.length = 0
   tree.leaves.values.length = 0
   tree.leaves.next_leaves.length = 0
@@ -599,7 +593,7 @@ export interface RleDRun<V> {
 
 /// Get the entry at the specified offset. This will return the largest run of values which
 /// contains the specified index.
-export function it_get_entry<V>(tree: IndexTree<V>, lv: LV): RleDRun<V> {
+export function itGetEntry<V>(tree: IndexTree<V>, lv: LV): RleDRun<V> {
   const cursor = cursor_at(tree, lv);
 
   DEV: check_cursor_at(tree, cursor, lv, false);
@@ -862,7 +856,7 @@ function extend_upper_range<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: 
   }
 }
 
-export function it_set_range<V>(tree: IndexTree<V>, start: number, end: number, data: V): void {
+export function itSetRange<V>(tree: IndexTree<V>, start: number, end: number, data: V): void {
   if (start === end) return;
   const cursor = cursor_at(tree, start);
 
@@ -1104,10 +1098,10 @@ function first_leaf<V>(tree: IndexTree<V>): LeafIdx {
 //   return tree.leaves.bounds[0] === MAX_BOUND;
 // }
 
-export function it_count_items<V>(tree: IndexTree<V>): number {
+export function itCountItems<V>(tree: IndexTree<V>): number {
   let count = 0;
   let leaf_idx = first_leaf(tree);
-  
+
   while (true) {
     const leaf_base = leaf_idx * LEAF_CHILDREN;
     count += tree.leaves.bounds.slice(leaf_base, leaf_base + LEAF_CHILDREN)
@@ -1207,7 +1201,7 @@ function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expe
     for (let i = 0; i < NODE_CHILDREN; i++) {
       const start = tree.nodes.keys[node_base + i];
       const child_idx = tree.nodes.child_indexes[node_base + i];
-      
+
       if (child_idx === NULL_IDX) {
         finished = true;
       } else {
@@ -1239,7 +1233,7 @@ function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expe
 }
 
 
-export function it_dbg_check<V>(tree: IndexTree<V>): void {
+export function itDbgCheck<V>(tree: IndexTree<V>): void {
   // Invariants:
   // - All index markers point to the node which contains the specified item.
   // - Except for the root item, all leaves must have at least 1 data entry.

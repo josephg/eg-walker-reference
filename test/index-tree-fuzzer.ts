@@ -1,5 +1,5 @@
 import assert from "assert/strict";
-import { it_clear, it_count_items, it_create, it_dbg_check, it_get_entry, it_set_range, ITContent, MAX_BOUND, RleDRun } from "../src/index-tree.js";
+import { itClear, itCountItems, itCreate, itDbgCheck, itGetEntry, itSetRange, ITContent, MAX_BOUND, RleDRun } from "../src/index-tree.js";
 import SeedRandom from "seed-random";
 
 type SimpleContent = number | null
@@ -68,11 +68,6 @@ function sc_clear<V>(c: SimpleContainer<V>) {
   c.list.length = 0
 }
 
-// function sc_set_range<V>(c: SimpleContainer<V>, start: number, end: number, value: V) {
-//   for (let i = start; i < end; i++) {
-//     c.list[i] = value;
-//   }
-// }
 function sc_set_range(c: SimpleContainer<SimpleContent>, start: number, end: number, value: SimpleContent) {
   for (let i = c.list.length; i < start; i++) {
     c.list.push(c.funcs.default())
@@ -96,11 +91,11 @@ function assertIterEq<V>(a: Iterable<V>, b: Iterable<V>) {
   }
 }
 
-function fuzz(seed: string, verbose: boolean = false): void {
+function fuzz(seed: string, verbose: boolean = false) {
   const random = SeedRandom(`zz ${seed}`);
   const randInt = (n: number) => Math.floor(random() * n);
 
-  const tree = it_create(simpleFuncs)
+  const tree = itCreate(simpleFuncs)
   const checkTree = makeSimpleContainer(simpleFuncs)
 
   for (let i = 0; i < 1000; i++) {
@@ -119,8 +114,8 @@ function fuzz(seed: string, verbose: boolean = false): void {
     //   console.log('start:', start, 'end', end, 'val', val)
     //   it_dbg_check(tree)
     // }
-    it_set_range(tree, start, end, val)
-    it_dbg_check(tree)
+    itSetRange(tree, start, end, val)
+    itDbgCheck(tree)
     sc_set_range(checkTree, start, end, val);
 
     // console.log('TREE', [...tree])

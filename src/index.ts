@@ -15,9 +15,10 @@
 //
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
-import * as causalGraph from "./causal-graph.js"
+import { CausalGraph, Id, intersectWithSummary, LV } from './causal-graph.js'
 import {} from './index-tree.js'
-import {assert, assertEq} from './utils.js'
+import {assert, assertEq, pushRLEList} from './utils.js'
+import bs from 'binary-search'
 
 /**
  * Operations either insert new content at some position (index), or delete the item
@@ -32,16 +33,20 @@ import {assert, assertEq} from './utils.js'
 export type ListOp<T = any> = {
   type: 'ins',
   pos: number
-  content: T
+  content: T[], // TODO: Move this to a master "inserted content" array in ListOpLog.
 } | {
   type: 'del',
   pos: number,
+  len: number, // Number of deleted items.
 }
+
+type OpWithVersion<T> = ListOp<T> & { version: LV }
 
 export interface ListOpLog<T = any> {
   // The LV for each op is its index in this list.
-  ops: ListOp<T>[],
-  cg: causalGraph.CausalGraph,
+  ops: OpWithVersion<T>[],
+  cg: CausalGraph,
+  len: number, // The total length of the stored ops array.
 }
 
 export function createOpLog<T = any>(): ListOpLog<T> {
@@ -50,70 +55,195 @@ export function createOpLog<T = any>(): ListOpLog<T> {
 
     // The causal graph stores the IDs (agent,seq) and parents for each
     // of the operations.
-    cg: causalGraph.createCG()
+    cg: new CausalGraph(),
+    len: 0,
   }
 }
 
-export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, ...content: T[]) {
-  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
-  causalGraph.add(oplog.cg, agent, seq, seq+content.length, oplog.cg.heads)
-  for (const val of content) {
-    oplog.ops.push({ type: 'ins', pos, content: val })
-    pos++ // Each successive insert happens at the next location.
+const opLen = (op: ListOp<any>): number => (
+  op.type === 'ins'
+    ? op.content.length
+    : op.len
+)
+
+const findOpIndex = <T>(oplog: ListOpLog<T>, lv: number): number => (
+  // Its a pity this needs to call opLen internally. Should be fast - but still.
+  bs(oplog.ops, lv, (op, needle) => (
+    needle < op.version ? 1
+      : needle >= op.version + opLen(op) ? -1
+      : 0
+  ))
+)
+
+/** Iterate through all operations in the range from start to end. Yields the operations only. */
+function* oplogIterRange<T>(oplog: ListOpLog<T>, start: LV, end: LV): Generator<OpWithVersion<T>> {
+  let idx = findOpIndex(oplog, start)
+
+  // The oplog is packed, so this should only happen when start >= oplog.end.
+  if (idx < 0) return
+
+  for (; idx < oplog.ops.length; idx++) {
+    const op = oplog.ops[idx]
+    if (op.version >= end) break
+
+    let len = opLen(op)
+
+    // At this point, the op should intersect our range somehow.
+    assert(op.version < end)
+    assert(op.version + len >= start)
+
+    if (op.version >= start && op.version + len <= end) {
+      yield op
+    } else {
+      // Clone the operation, trim it down and yield the trimmed version.
+      let op2: OpWithVersion<T> = { ...op }
+
+      let sliceStart = op.version < start
+        ? start - op.version
+        : 0
+
+      let sliceEnd = op.version + len > end
+        ? end - op.version
+        : len
+
+      op2.version += sliceStart
+
+      if (op2.type === 'del') {
+        op2.len = sliceEnd - sliceStart
+      } else {
+        op2.pos += sliceStart
+        op2.content = op2.content.slice(sliceStart, sliceEnd)
+      }
+
+      yield op2
+    }
   }
+}
+
+function dbgCheckOplog<T>(oplog: ListOpLog<T>) {
+  oplog.cg.dbgCheck()
+
+  let actualLen = 0
+  for (let op of oplog.ops) {
+    actualLen += opLen(op)
+  }
+  assertEq(actualLen, oplog.len)
+
+  // We don't necessarily have to assign LVs from zero - but because we do, the
+  // "next LV" also counts the number of items in the causal graph.
+  assertEq(oplog.len, oplog.cg.nextLV())
+}
+
+function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
+  if (a.type === 'ins' && b.type === 'ins') {
+    let len = a.content.length
+    // Checking the version probably isn't relevant here because of how I'm using this function.
+    // But its still good practice, I think. Dunno how this function will be used later.
+    return a.pos + len === b.pos
+      && a.version + len === b.version
+  } else if (a.type === 'del' && b.type === 'del') {
+    // TODO: Also add backspace optimisation.
+    return a.pos === b.pos
+      && a.version + a.len === b.version
+  } else return false
+}
+
+export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, ...content: T[]) {
+  const seq = oplog.cg.nextSeqForAgent(agent)
+  const version = oplog.cg.nextLV()
+
+  // add returns the number of items missing from oplog.cg.
+  let lenAdded = oplog.cg.add(agent, seq, seq + content.length)
+  assertEq(lenAdded, content.length)
+  pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'ins', pos, content, version })
+  oplog.len += lenAdded
 }
 
 export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
   if (len === 0) throw Error('Invalid delete length')
 
-  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
-  causalGraph.add(oplog.cg, agent, seq, seq+len, oplog.cg.heads)
-  for (let i = 0; i < len; i++) {
-    oplog.ops.push({ type: 'del', pos })
-  }
+  const seq = oplog.cg.nextSeqForAgent(agent)
+  const version = oplog.cg.nextLV()
+
+  let lenAdded = oplog.cg.add(agent, seq, seq+len)
+  assertEq(lenAdded, len)
+  pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'del', pos, len, version })
+  oplog.len += lenAdded
 }
 
-/** Add an operation to the oplog. Content is required if the operation is an insert. */
-export function pushOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
-  const entry = causalGraph.addRaw(oplog.cg, id, 1, parents)
-  if (entry == null) return false // We already have this operation.
+/**
+ * Add an operation to the oplog. This is for "remote" operations from other peers
+ * or to load operations from a file.
+ *
+ * Content is required if the operation is an insert.
+ *
+ * Returns the inserted length.
+ */
+export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: Id, parents: Id[], op: ListOp<T>): number {
+  let lenAdded = oplog.cg.addRemote(id, 1, parents)
+  if (lenAdded === 0) return 0 // We already have this operation.
 
-  if (type === 'ins' && content === undefined) throw Error('Cannot add an insert operation with no content')
-  assertEq(entry.version, oplog.ops.length, 'Invalid state: oplog length and cg do not match')
+  // if (type === 'ins' && content === undefined) throw Error('Cannot add an insert operation with no content')
 
-  const op: ListOp<T> = type === 'ins' ? {
-    type, pos, content: content!
-  } : {
-    type, pos
+  const version = oplog.cg.nextLV()
+  let len = opLen(op)
+  if (len > lenAdded) {
+    // Truncate the operation, keeping the tail.
+    let sliceAt = len - lenAdded
+    if (op.type === 'del') {
+      op.len -= sliceAt
+    } else {
+      op.pos += sliceAt
+      op.content = op.content.slice(sliceAt)
+    }
   }
 
-  oplog.ops.push(op)
-  return true
+  // Adding the version here constructs a new object.
+  const opWithV: OpWithVersion<T> = {
+    ...op,
+    version
+  }
+  pushRLEList(tryMergeOpWithV, oplog.ops, opWithV)
+  return lenAdded
 }
 
-export function getLatestVersion<T>(oplog: ListOpLog<T>): causalGraph.RawVersion[] {
-  return causalGraph.lvToRawList(oplog.cg, oplog.cg.heads)
+export function getLatestVersion<T>(oplog: ListOpLog<T>): Id[] {
+  return oplog.cg.lvToIdList(oplog.cg.heads())
 }
 
 /**
  * This function adds everything in the src oplog to dest.
  */
 export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
-  let vs = causalGraph.summarizeVersion(dest.cg)
-  const [commonVersion, _remainder] = causalGraph.intersectWithSummary(src.cg, vs)
+  // It would also be possible (and much easier) to convert all operations in
+  // src into "remote operations" (using an external ID and such). But this
+  // function exactly mirrors how you'd sync peers over the network. I also
+  // think (hope) it should be a bit faster. So I'm doing it this way.
+
+  let vs = dest.cg.summarizeVersion()
+  const [commonVersion, _remainder] = intersectWithSummary(src.cg.inner, vs)
   // `remainder` lists items in dest that are not in src. Not relevant!
 
   // Now we need to get all the versions since commonVersion.
-  const ranges = causalGraph.diff(src.cg, commonVersion, src.cg.heads).bOnly
+  const ranges = src.cg.diff(commonVersion, src.cg.heads()).bOnly
 
-  // Copy the missing CG entries.
-  const cgDiff = causalGraph.serializeDiff(src.cg, ranges)
-  causalGraph.mergePartialVersions(dest.cg, cgDiff)
+  // Copy the missing CG entries from src to dest.
+  const cgDiff = src.cg.serializeDiff(ranges)
+  dest.cg.mergePartialVersions(cgDiff)
 
-  // And copy the corresponding oplog entries.
+  // And copy the corresponding operations from the oplog.
+  let lv = dest.cg.nextLV()
   for (const [start, end] of ranges) {
-    for (let i = start; i < end; i++) {
-      dest.ops.push(src.ops[i])
+    for (const srcOp of oplogIterRange(src, start, end)) {
+      // Now, I could use pushRemoteOp here but we've already updated the
+      // destination CG directly.
+      const destOp = { ...srcOp }
+      destOp.version = lv
+      pushRLEList(tryMergeOpWithV, dest.ops, destOp)
+
+      let len = opLen(destOp)
+      lv += len
+      dest.len += len
     }
   }
 }
@@ -129,7 +259,9 @@ enum ItemState {
 
 // This is internal only, and used while reconstructing the changes.
 interface Item {
-  opId: number,
+  // This item represents a span of inserted characters from lvStart to lvEnd.
+  lvStart: LV,
+  lvEnd: LV,
 
   /**
    * The item's state at this point in the merge. This is initially set to Inserted,
@@ -142,14 +274,14 @@ interface Item {
   /**
    * The item's state when *EVERYTHING* has been merged. This is always either Inserted or Deleted.
    */
-  endState: ItemState,
+  endState: ItemState, // Replace this with a boolean?
 
   // -1 means start / end of document. This is the core list CRDT (sync9/fugue).
-  originLeft: number | -1,
+  originLeft: LV | -1,
 
   // -1 means the end of the document. This uses fugue's semantics.
   // All right children have a rightParent of -1.
-  rightParent: number | -1,
+  originRight: LV | -1,
 }
 
 interface EditContext {
@@ -244,7 +376,7 @@ function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
 }
 
 const findItemIdx = (ctx: EditContext, needle: number): number => {
-  const idx = ctx.items.findIndex(i => i.opId === needle)
+  const idx = ctx.items.findIndex(i => i.lv === needle)
   if (idx === -1) throw Error('Could not find needle in items')
   return idx
 }
@@ -275,7 +407,7 @@ const findItemIdx = (ctx: EditContext, needle: number): number => {
  *
  * Anyway, the long and short of it is: This function implements the Sync9 / Fugue CRDT.
  */
-function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor) {
+function integrate(ctx: EditContext, cg: causalGraph.CausalGraphInner, newItem: Item, cursor: DocCursor) {
   // If there's no concurrency, we don't need to scan.
   if (cursor.idx >= ctx.items.length || ctx.items[cursor.idx].curState !== ItemState.NotYetInserted) return
 
@@ -285,7 +417,7 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
   let scanEndPos = cursor.endPos
 
   const leftIdx = cursor.idx - 1
-  const rightIdx = newItem.rightParent === -1 ? ctx.items.length : findItemIdx(ctx, newItem.rightParent)
+  const rightIdx = newItem.originRight === -1 ? ctx.items.length : findItemIdx(ctx, newItem.originRight)
 
   while (scanIdx < ctx.items.length) {
     let other = ctx.items[scanIdx]
@@ -295,15 +427,15 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
     // when which the insert occurred. We can use the item's state to bound the search.
     if (other.curState !== ItemState.NotYetInserted) break
 
-    if (other.opId === newItem.rightParent) throw Error('invalid state')
+    if (other.lv === newItem.originRight) throw Error('invalid state')
 
     // The index of the origin left / right for the other item.
     let oleftIdx = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
     if (oleftIdx < leftIdx) break
     else if (oleftIdx === leftIdx) {
-      let orightIdx = other.rightParent === -1 ? ctx.items.length : findItemIdx(ctx, other.rightParent)
+      let orightIdx = other.originRight === -1 ? ctx.items.length : findItemIdx(ctx, other.originRight)
 
-      if (orightIdx === rightIdx && causalGraph.lvCmp(cg, newItem.opId, other.opId) < 0) break
+      if (orightIdx === rightIdx && causalGraph.lvCmp(cg, newItem.lv, other.lv) < 0) break
       else scanning = orightIdx < rightIdx
     }
 
@@ -351,7 +483,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     item.curState = item.endState = ItemState.Deleted
 
     // And mark that this delete corresponds to *that* item.
-    ctx.delTargets[opId] = item.opId
+    ctx.delTargets[opId] = item.lv
   } else {
     // Insert! This is much more complicated as we need to do the Yjs integration.
     const cursor = findByCurPos(ctx, op.pos)
@@ -363,7 +495,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     }
 
     // Anyway, originLeft is just the LV of the item to our left.
-    const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].opId
+    const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].lv
 
     // originRight is the ID of the next item which isn't in the NYI curState.
     let rightParent = -1
@@ -373,7 +505,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
       const nextItem = ctx.items[i]
       if (nextItem.curState !== ItemState.NotYetInserted) {
         // We'll take this item for the "right origin" and right bound (highest index) that we can insert at.
-        rightParent = (nextItem.originLeft === originLeft) ? nextItem.opId : -1
+        rightParent = (nextItem.originLeft === originLeft) ? nextItem.lv : -1
         break
       }
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
@@ -381,9 +513,9 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     const newItem: Item = {
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
-      opId: opId,
+      lv: opId,
       originLeft,
-      rightParent,
+      originRight: rightParent,
     }
     ctx.itemsByLV[opId] = newItem
 
@@ -407,22 +539,22 @@ function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
 
   for (const item of ctx.items) {
     const isLeftChild = true
-    const parent = isLeftChild ? item.originLeft : item.rightParent
+    const parent = isLeftChild ? item.originLeft : item.originRight
     const d = parent === -1 ? 0 : depth[parent] + 1
 
-    depth[item.opId] = d
+    depth[item.lv] = d
     const lvToStr = (lv: number) => {
       if (lv === -1) return 'ROOT'
       const rv = causalGraph.lvToRaw(oplog.cg, lv)
       return `[${rv[0]},${rv[1]}]`
     }
 
-    const op = oplog.ops[item.opId]
+    const op = oplog.ops[item.lv]
     if (op.type !== 'ins') throw Error('Invalid state') // This avoids a typescript type error.
     const value = item.endState === ItemState.Deleted ? null : op.content
 
-    let content = `${value == null ? '.' : value} at ${lvToStr(item.opId)} (left ${lvToStr(item.originLeft)})`
-    content += ` right ${lvToStr(item.rightParent)}`
+    let content = `${value == null ? '.' : value} at ${lvToStr(item.lv)} (left ${lvToStr(item.originLeft)})`
+    content += ` right ${lvToStr(item.originRight)}`
     console.log(`${'| '.repeat(d)}${content}`)
   }
 }
@@ -605,11 +737,11 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
     const item: Item = {
       // TODO: Consider using some weird IDs here instead of normal numbers to make it clear.
       // Right now these IDs are also used in ctx.itemsByLV, but if that becomes a Map instead it would work better.
-      opId,
+      lv: opId,
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
       originLeft: -1,
-      rightParent: -1,
+      originRight: -1,
     }
     ctx.items.push(item)
     ctx.itemsByLV[opId] = item

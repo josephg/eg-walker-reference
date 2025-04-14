@@ -1,6 +1,6 @@
 import { test, describe } from "bun:test";
 import assert from "assert/strict";
-import { it_clear, it_count_items, it_create, it_dbg_check, it_get_entry, it_set_range, ITContent, MAX_BOUND, RleDRun } from "../src/index-tree.js";
+import { itClear, itCountItems, itCreate, itDbgCheck, itGetEntry, itSetRange, ITContent, MAX_BOUND, RleDRun } from "../src/index-tree.js";
 import SeedRandom from "seed-random";
 
 type SimpleContent = number | null

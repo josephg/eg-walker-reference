@@ -291,10 +291,11 @@ function fuzz(seed: number, verbose: boolean = false) {
 
   for (let i = 0; i < 1000; i++) {
     // if (verbose && i % 100 === 0) {
-      console.log(`Iteration: ${i}`);
+    //   console.log(`Iteration: ${i}`);
     // }
+    if (verbose) console.log(`Iteration: ${i}`)
 
-    if (i == 8) {
+    if (i == 4) {
       debugger
     }
 
@@ -309,7 +310,7 @@ function fuzz(seed: number, verbose: boolean = false) {
       }
 
       // Insert into reference tree
-      refTree.insertContentPos(cur_pos, {...item});
+      refTree.insertContentPos(cur_pos, {...item})
 
       // Insert into our tree
       let end_pos, cursor
@@ -324,19 +325,39 @@ function fuzz(seed: number, verbose: boolean = false) {
       }
 
       const pre_pos = { cur: cur_pos, end: end_pos };
+
+      const item_size = {
+        cur: TEST_FUNCS.content_len_cur(item),
+        end: TEST_FUNCS.content_len_end(item),
+      }
+
+      // ct_print_tree(tree)
+      // console.log('pre cursor', cursor)
+      // ct_debug_check(tree)
       ct_insert(tree, item, cursor, true)
+      // console.log('post cursor', cursor)
+      // ct_print_tree(tree)
+      // ct_debug_check(tree)
 
       // Calculate expected positions after insertion
       const post_pos = {
-        cur: pre_pos.cur + TEST_FUNCS.content_len_cur(item),
-        end: pre_pos.end + TEST_FUNCS.content_len_end(item)
+        cur: pre_pos.cur + item_size.cur,
+        end: pre_pos.end + item_size.end,
       };
 
-      ct_emplace_cursor(tree, post_pos.cur, post_pos.end, cursor);
+      try {
+        // ct_print_tree(tree)
+        // console.log('pre pos', pre_pos, 'post_pos', post_pos, 'cursor', cursor)
+
+        ct_emplace_cursor(tree, post_pos.cur, post_pos.end, cursor)
+      } catch (e: any) {
+        e.iteration = i
+        throw e
+      }
 
     } else {
       // Modify existing content
-      const modify_len = 1 + randRange(1, Math.min(20, ct_total_cur_len(tree)));
+      const modify_len = randRange(1, Math.min(20, ct_total_cur_len(tree)));
       assert(modify_len <= ct_total_cur_len(tree))
 
       const pos = randInt(ct_total_cur_len(tree) - modify_len)
@@ -368,10 +389,19 @@ function fuzz(seed: number, verbose: boolean = false) {
         cursor_pos.cur += result.cur;
         cursor_pos.end += result.end;
         len_remaining -= changed;
+
+        // ct_print_tree(tree)
+        // try {
+        //   ct_debug_check(tree)
+        // } catch (e) {
+        //   console.error('While mutating entry')
+        //   ct_print_tree(tree)
+        //   throw e
+        // }
       }
 
-      console.log('emplace cursor', cursor, cursor_pos)
-      ct_print_tree(tree)
+      // console.log('emplace cursor', cursor, cursor_pos)
+      // ct_print_tree(tree)
       ct_emplace_cursor(tree, cursor_pos.cur, cursor_pos.end, cursor);
     }
 
@@ -407,6 +437,7 @@ function fuzz(seed: number, verbose: boolean = false) {
 
       ct_print_tree(tree)
 
+      e.iteration = i
       throw e
     }
   }
@@ -419,7 +450,16 @@ function fuzz(seed: number, verbose: boolean = false) {
 // testReplaceItem()
 
 // fuzz(123, true)
-fuzz(0, true)
+// fuzz(297, true)
+
+for (let i = 0; i < 1000; i++) {
+  try {
+    fuzz(i, false)
+    console.log('PASS', i)
+  } catch (e: any) {
+    console.log('iter', i, 'crashed on', e.iteration)
+  }
+}
 
 /*
 

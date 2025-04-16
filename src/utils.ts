@@ -33,7 +33,11 @@ export const pushRLEList = <T>(tryAppend: (a: T, b: T) => boolean, list: T[], ne
   }
 }
 
-
-
 export const min2 = (a: number, b: number) => a < b ? a : b
 export const max2 = (a: number, b: number) => a > b ? a : b
+
+declare const DEBUG: boolean
+if (typeof DEBUG === 'undefined') {
+  console.warn('DEBUG undefined. Add --define DEBUG:false to disable')
+  ;(globalThis as any).DEBUG = false
+}

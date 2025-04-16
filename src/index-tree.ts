@@ -15,6 +15,8 @@ import {
   NULL_IDX,
 } from './tree-common.js'
 
+declare const DEBUG: boolean
+
 export const MAX_BOUND = Number.MAX_SAFE_INTEGER
 
 export class IndexTree<V> {
@@ -533,7 +535,7 @@ function elem_upper_bound<V>(leaves: Leaves<V>, leaf_idx: LeafIdx, elem_idx: num
 
 // Helper function to check that the cursor is at some specified position.
 function check_cursor_at<V>(tree: IndexTreeInner<V>, cursor: IndexCursor, lv: LV, at_end: boolean): void {
-  DEV: {
+  if (DEBUG) {
     const leaf_base = cursor.leaf_idx * LEAF_CHILDREN
     const lower_bound = tree.leaves.bounds[leaf_base + cursor.elem_idx]
     const upper_bound = elem_upper_bound(tree.leaves, cursor.leaf_idx, cursor.elem_idx)
@@ -566,7 +568,7 @@ function cursor_at<V>(tree: IndexTreeInner<V>, lv: LV): IndexCursor {
   assert(lv < MAX_BOUND)
 
   if (tree.cursor_key === lv) {
-    DEV: check_cursor_at(tree, tree.cursor, lv, false)
+    if (DEBUG) check_cursor_at(tree, tree.cursor, lv, false)
 
     // TODO: Consider cloning cursor here.
     // return tree.cursor
@@ -621,7 +623,7 @@ export interface RleDRun<V> {
 export function itGetEntry<V>(tree: IndexTreeInner<V>, lv: LV): RleDRun<V> {
   const cursor = cursor_at(tree, lv);
 
-  DEV: check_cursor_at(tree, cursor, lv, false);
+  if (DEBUG) check_cursor_at(tree, cursor, lv, false);
 
   // TODO: Is this needed?
   tree.cursor = cursor;
@@ -669,6 +671,19 @@ function recursively_update_nodes<V>(tree: IndexTreeInner<V>, node_idx: NodeIdx,
 // }
 
 
+function dbg_check_bounds_monotonically_increase(leaves: Leaves<any>, leaf_idx: LeafIdx, elem_idx: number) {
+  const leaf_base = leaf_idx * LEAF_CHILDREN;
+  let prev = leaves.bounds[leaf_base]
+  for (let i = 1; i < elem_idx; i++) {
+    const b = leaves.bounds[leaf_base + i];
+    if (b !== MAX_BOUND) {
+      assert(b > prev, `Bounds does not monotonically increase b=${leaves.bounds}`);
+    }
+    prev = b
+  }
+
+}
+
 // Helper function to trim leaf end
 // Returns true if we need to keep trimming stuff after this leaf.
 function trim_leaf_end<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: number, end: LV): boolean {
@@ -677,16 +692,8 @@ function trim_leaf_end<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: 
   let upper_bound = leaf_upper_bound(leaves, leaf_idx)
   const leaf_base = leaf_idx * LEAF_CHILDREN;
 
-  DEV: {
-    // Check the bounds monotonically increase
-    let prev = leaves.bounds[leaf_base]
-    for (let i = 1; i < elem_idx; i++) {
-      const b = leaves.bounds[leaf_base + i];
-      if (b !== MAX_BOUND) {
-        assert(b > prev, `Bounds does not monotonically increase b=${leaves.bounds}`);
-      }
-      prev = b
-    }
+  if (DEBUG) {
+    /* @__PURE__ */ dbg_check_bounds_monotonically_increase(leaves, leaf_idx, elem_idx)
   }
 
   if (elem_idx >= LEAF_CHILDREN || leaves.bounds[leaf_base + elem_idx] === MAX_BOUND) {
@@ -778,7 +785,7 @@ function trim_node_start<V>(tree: IndexTreeInner<V>, idx: number, end: LV, heigh
     if (end > tree.nodes.keys[node_base]) {
       const keep_child_idx = find_lv_in_node(tree.nodes, idx, end)
 
-      DEV: {
+      if (DEBUG) {
         const i = tree.nodes.child_indexes[node_base + keep_child_idx]
         assert(upper_bound_scan(tree, i, height - 1) > end)
       }
@@ -808,7 +815,7 @@ function trim_node_start<V>(tree: IndexTreeInner<V>, idx: number, end: LV, heigh
   )
   tree.leaves.bounds[leaf_base] = end
 
-  DEV: assert(leaf_upper_bound(tree.leaves, idx) >= end)
+  if (DEBUG) assert(leaf_upper_bound(tree.leaves, idx) >= end)
 
   return idx
 }
@@ -821,7 +828,7 @@ function trim_node_end_after_child<V>(tree: IndexTreeInner<V>, node_idx: NodeIdx
 
   const del_start = idx + 1;
 
-  DEV: {
+  if (DEBUG) {
     const child_idx = tree.nodes.child_indexes[node_base + idx];
     const up = upper_bound_scan(tree, child_idx, height - 1);
     assert(end > up);
@@ -885,16 +892,16 @@ export function itSetRange<V>(tree: IndexTreeInner<V>, start: number, end: numbe
   if (start === end) return;
   const cursor = cursor_at(tree, start);
 
-  DEV: check_cursor_at(tree, cursor, start, false);
+  if (DEBUG) check_cursor_at(tree, cursor, start, false);
 
   // The cursor may move.
   const [new_cursor, at_end] = set_range_internal(tree, cursor, start, end, data);
 
-  DEV: check_cursor_at(tree, new_cursor, end, at_end);
+  if (DEBUG) check_cursor_at(tree, new_cursor, end, at_end);
 
   if (at_end) {
     cursor_to_next(tree, new_cursor);
-    DEV: check_cursor_at(tree, new_cursor, end, false);
+    if (DEBUG) check_cursor_at(tree, new_cursor, end, false);
   }
   tree.cursor = new_cursor;
   tree.cursor_key = end;
@@ -1109,7 +1116,7 @@ function set_range_internal<V>(tree: IndexTreeInner<V>, cursor: IndexCursor, sta
 }
 
 function first_leaf<V>(tree: IndexTreeInner<V>): LeafIdx {
-  DEV: {
+  if (DEBUG) {
     let idx = tree.root;
     for (let i = 0; i < tree.height; i++) {
       idx = tree.nodes.child_indexes[idx * NODE_CHILDREN];
@@ -1269,7 +1276,7 @@ export function itDbgCheck<V>(tree: IndexTreeInner<V>): void {
   // 1. We walk the leaves by following next_leaf pointers in each leaf node
   // 2. We recursively walk the tree
 
-  DBG: {
+  if (DEBUG) {
     // Walk the leaves.
     // let leaves_visited = 0;
     let leaf_idx = first_leaf(tree);

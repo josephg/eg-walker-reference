@@ -51,7 +51,7 @@ export interface ListOpLog<T = any> {
   // The LV for each op is its index in this list.
   ops: OpWithVersion<T>[],
   cg: CausalGraph,
-  len: number, // The total length of the stored ops array.
+  // len: number, // The total length of the stored ops array.
 }
 
 export function createOpLog<T = any>(): ListOpLog<T> {
@@ -61,7 +61,6 @@ export function createOpLog<T = any>(): ListOpLog<T> {
     // The causal graph stores the IDs (agent,seq) and parents for each
     // of the operations.
     cg: new CausalGraph(),
-    len: 0,
   }
 }
 
@@ -132,11 +131,11 @@ function dbgCheckOplog<T>(oplog: ListOpLog<T>) {
   for (let op of oplog.ops) {
     actualLen += opLen(op)
   }
-  assertEq(actualLen, oplog.len)
+  // assertEq(actualLen, oplog.len)
 
   // We don't necessarily have to assign LVs from zero - but because we do, the
   // "next LV" also counts the number of items in the causal graph.
-  assertEq(oplog.len, oplog.cg.nextLV())
+  // assertEq(oplog.len, oplog.cg.nextLV())
 }
 
 function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
@@ -152,8 +151,10 @@ function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
     // TODO: Also add backspace optimisation.
     if (a.pos === b.pos && a.version + a.len === b.version) {
       a.len += b.len
+      return true
     }
-  } else return false
+  }
+  return false
 }
 
 export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, ...content: T[]) {
@@ -164,7 +165,6 @@ export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
   let lenAdded = oplog.cg.add(agent, seq, seq + content.length)
   assertEq(lenAdded, content.length)
   pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'ins', pos, content, version })
-  oplog.len += lenAdded
 }
 
 export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
@@ -176,7 +176,6 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
   let lenAdded = oplog.cg.add(agent, seq, seq+len)
   assertEq(lenAdded, len)
   pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'del', pos, len, version })
-  oplog.len += lenAdded
 }
 
 /**
@@ -261,7 +260,6 @@ export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
 
       let len = opLen(destOp)
       lv += len
-      dest.len += len
     }
   }
 }
@@ -392,8 +390,10 @@ function applyRange<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<
           // Apply the operation to the snapshot.
           if (op.type === 'ins') {
             snapshot?.splice(xfPos, 0, ...op.content)
+            // console.log('INS', xfPos, op.content, '->', (snapshot as string[]).join(''))
           } else {
-            snapshot?.splice(xfPos, lenHere)
+            const deleted = snapshot?.splice(xfPos, lenHere)
+            // console.log('DEL', lenHere, `'${(deleted as string[]).join('')}' -> '${(snapshot as string[]).join('')}'`)
           }
         }
 
@@ -436,6 +436,7 @@ type TransformedPosition = number | -1
 // Returns the amount of the op we've processed, and the transformed position (ie, where it goes in the output).
 function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agent: string, seq: number): [number, TransformedPosition] {
   let len = opLen(op)
+
   if (op.type === 'ins') {
     let originLeft = -1
 
@@ -531,6 +532,7 @@ function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agen
       target: fwd ? targetStart : targetEnd
     })
 
+    // console.log('del xf', op.pos, '->', endPos)
     return [len, everDeleted ? -1 : endPos]
   }
 }

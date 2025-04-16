@@ -1,8 +1,11 @@
 
 
-// TODO: Increase these numbers in production mode.
-export const NODE_CHILDREN = 4
-export const LEAF_CHILDREN = 4
+// We use higher numbers in production mode.
+
+// export const NODE_CHILDREN = 4
+// export const LEAF_CHILDREN = 4
+export const NODE_CHILDREN = 32
+export const LEAF_CHILDREN = 16
 
 export const NODE_SPLIT_POINT = NODE_CHILDREN / 2
 export const LEAF_SPLIT_POINT = LEAF_CHILDREN / 2

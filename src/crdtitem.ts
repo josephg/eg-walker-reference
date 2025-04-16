@@ -102,8 +102,8 @@ export const ITEM_FUNCS: ContentTreeFuncs<CRDTItem> = {
       endStateEverDeleted: val.endStateEverDeleted,
     }
 
-    val.lvStart += offset
     val.originLeft = val.lvStart + offset - 1
+    val.lvStart += offset
     return result
   },
 

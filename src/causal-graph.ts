@@ -335,7 +335,7 @@ function add(cg: CausalGraphInner, agent: string, seqStart: number, seqEnd: numb
     if (idx >= 1) {
       let prev = av[idx - 1]
 
-      if (prev && prev.seqEnd >= seqStart) {
+      if (prev && prev.seqEnd > seqStart) {
         // We already have some of the changes.
         assert(prev.seqEnd < seqEnd) // Invalid - We would have gotten a 0+ index in this case.
 
@@ -356,11 +356,14 @@ function add(cg: CausalGraphInner, agent: string, seqStart: number, seqEnd: numb
     }
 
     // Otherwise splice in at destination index. Note seqStart may be trimmed.
-    av.splice(idx, 0, {
+    const newEntry: ClientEntry = {
       seq: seqStart,
       seqEnd,
       version
-    })
+    }
+    if (idx === 0 || !tryAppendClientEntry(av[idx - 1], newEntry)) {
+      av.splice(idx, 0, newEntry)
+    }
   } else {
     // av = cg.agentToVersion[agent] = []
     cg.agentToVersion[agent] = [{

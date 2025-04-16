@@ -11,6 +11,8 @@ import {
 } from './tree-common.js'
 import { MAX_BOUND } from './index-tree.js'
 
+declare const DEBUG: boolean
+
 export type NotifyFn<V> = (val: V, leaf: LeafIdx) => void
 
 export class ContentTree<V> {
@@ -99,9 +101,10 @@ export class ContentTree<V> {
     return ct_cmp_cursor(this.inner, a, b)
   }
 
-  dbgPrint() {
-    ct_print_tree(this.inner)
-  }
+  // dbgPrint() {
+  //   console.table([...ct_iter_rle(this.inner)])
+  //   ct_print_tree(this.inner)
+  // }
 }
 
 interface ContentTreeInner<V> {
@@ -197,12 +200,6 @@ function pushLeaf<V>(tree: ContentTreeInner<V>): LeafIdx {
   for (let i = 0; i < LEAF_CHILDREN; i++) {
     tree.leaf_values.push(tree.funcs.none()) // TODO: Consider sharing this item.
   }
-
-  // tree.leaf_values.length = LEAF_CHILDREN * newLen
-  // for (let i = 0; i < LEAF_CHILDREN; i++) {
-  //   tree.leaf_values[newIdx * LEAF_CHILDREN + i] = tree.funcs.none()
-  // }
-  // tree.leaf_values.fill( // fill with default()?
 
   tree.leaf_next.push(NULL_IDX)
   tree.leaf_parents.push(NULL_IDX)
@@ -332,7 +329,7 @@ function nextEntry<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): boolean
 }
 
 export function ct_inc_cursor_offset<V>(tree: ContentTreeInner<V>, cursor: ContentCursor) {
-  DBG: {
+  if (DEBUG) {
     let e = tree.leaf_values[cur_value_offset(cursor)]
     let len = tree.funcs.raw_len(e)
     assert(cursor.offset < len)
@@ -346,7 +343,7 @@ export function ct_get_item<V>(tree: ContentTreeInner<V>, cursor: ContentCursor)
 }
 
 function assert_cursor_at<V>(tree: ContentTreeInner<V>, cursor: ContentCursor, exp_cur: number, exp_end: number) {
-  DBG: {
+  if (DEBUG) {
     let cur = 0, end = 0
 
     let idx_off = cur_value_offset(cursor)
@@ -420,7 +417,7 @@ export function ct_cmp_cursor<V>(tree: ContentTreeInner<V>, a: ContentCursor, b:
 // *** Content tree methods! (finally!) ***
 
 export function ctCreate<V>(funcs: ContentTreeFuncs<V>, notify: NotifyFn<V> = () => { }): ContentTreeInner<V> {
-  DBG: {
+  if (DEBUG) {
     assertEq(funcs.content_len_cur(funcs.none()), 0)
     assertEq(funcs.content_len_end(funcs.none()), 0)
     assertEq(funcs.exists(funcs.none()), false)
@@ -485,7 +482,7 @@ export function ctClear<V>(tree: ContentTreeInner<V>) {
 }
 
 export function ctSetSingleItem<V>(tree: ContentTreeInner<V>, item: V) {
-  DBG: {
+  if (DEBUG) {
     assert(!tree.funcs.exists(tree.leaf_values[0]))
     assertEq(tree.upd_leaf, MAX_BOUND)
   }
@@ -541,7 +538,7 @@ function split_node<V>(tree: ContentTreeInner<V>, old_idx: NodeIdx, children_are
   const old_node_width_base = old_idx * NODE_CHILDREN * 2
 
   // The old leaf must be full before we split it.
-  DBG: {
+  if (DEBUG) {
     assert(node_is_full(tree, old_idx))
   }
 
@@ -662,7 +659,7 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   const new_leaf_idx = pushLeaf(tree)
 
   // The old leaf must be full before we split it.
-  DBG: {
+  if (DEBUG) {
     assert(!leaf_has_space(tree, old_idx, 2))
   }
 
@@ -812,7 +809,7 @@ export function ct_insert<V>(
   cursor: ContentCursor,
   notify_here: boolean
 ): void {
-  DBG: {
+  if (DEBUG) {
     assert(tree.funcs.exists(item))
   }
 
@@ -838,7 +835,7 @@ export function ct_insert<V>(
   }
 
   if (offset !== 0) {
-    DBG: {
+    if (DEBUG) {
       assertEq(offset, tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx]))
     }
 
@@ -1091,8 +1088,7 @@ function find_cur_pos_in_node(tree: ContentTreeInner<any>, idx: NodeIdx, at_cur_
 function find_cur_pos_in_leaf(tree: ContentTreeInner<any>, idx: LeafIdx, at_cur_pos: number): [number, number, number] {
   let end_pos = 0;
 
-  let base = idx * NODE_CHILDREN
-  let width_base = idx * NODE_CHILDREN * 2
+  let base = idx * LEAF_CHILDREN
 
   for (let i = 0; i < LEAF_CHILDREN; i++) {
     let val = tree.leaf_values[base + i]
@@ -1201,7 +1197,7 @@ export function ct_cursor_before_cur_pos<V>(tree: ContentTreeInner<V>, content_p
   let [elem_idx, rel_end_pos, offset] = find_cur_pos_in_leaf(tree, idx, content_pos_remaining)
 
   // We're guaranteed that the item under elem_idx has size in CUR. Well, unless the tree is empty.
-  DBG: {
+  if (DEBUG) {
     assert((content_pos == 0 && ctIsEmpty(tree))
       || tree.funcs.takes_up_space_cur(tree.leaf_values[leaf_base + elem_idx]))
   }
@@ -1228,7 +1224,7 @@ export function ct_emplace_cursor<V>(tree: ContentTreeInner<V>, cur_pos: number,
   tree.cursor_cur = cur_pos
   tree.cursor_end = end_pos
 
-  DBG: {
+  if (DEBUG) {
     // In debug mode, verify that the cursor is pointing to the correct position
     assert_cursor_at(tree, cursor, cur_pos, end_pos)
   }

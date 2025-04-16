@@ -18,7 +18,7 @@
 import * as causalGraph from "./causal-graph.js"
 
 // ** A couple utility methods **
-function assert(expr: boolean, msg?: string) {
+function assert(expr: boolean, msg?: string): asserts expr {
   if (!expr) throw Error(msg != null ? `Assertion failed: ${msg}` : 'Assertion failed')
 }
 
@@ -380,7 +380,11 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
       const nextItem = ctx.items[i]
       if (nextItem.curState !== ItemState.NotYetInserted) {
         // We'll take this item for the "right origin" and right bound (highest index) that we can insert at.
+        // Note: This is where Fugue and FugueMax depart.
+        // Fugue version:
         rightParent = (nextItem.originLeft === originLeft) ? nextItem.opId : -1
+        // FugueMax version:
+        // rightParent = nextItem.opId
         break
       }
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.

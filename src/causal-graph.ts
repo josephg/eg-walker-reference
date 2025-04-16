@@ -57,6 +57,14 @@ export class CausalGraph {
     return lvToIdList(this.inner, frontier)
   }
 
+  idToLV(agent: string, seq: number): LV {
+    return idToLV(this.inner, agent, seq)
+  }
+
+  idToLVList(ids: Id[]): LV[] {
+    return idToLVList(this.inner, ids)
+  }
+
   heads() {
     return this.inner.heads
   }
@@ -267,7 +275,7 @@ export const hasVersion = (cg: CausalGraphInner, agent: string, seq: number): bo
 /** Returns the first new version in the inserted set */
 export const addRemote = (cg: CausalGraphInner, id: Id, len: number = 1, rawParents?: Id[]): number => {
   const parents = rawParents != null
-    ? rawToLVList(cg, rawParents)
+    ? idToLVList(cg, rawParents)
     : cg.heads
 
   return add(cg, id[0], id[1], id[1]+len, parents)
@@ -500,17 +508,17 @@ export const tryRawToLV = (cg: CausalGraphInner, agent: string, seq: number): LV
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   return clientEntry?.version ?? null
 }
-export const rawToLV = (cg: CausalGraphInner, agent: string, seq: number): LV => {
+export const idToLV = (cg: CausalGraphInner, agent: string, seq: number): LV => {
   const clientEntry = findClientEntryTrimmed(cg, agent, seq)
   if (clientEntry == null) throw Error(`Unknown ID: (${agent}, ${seq})`)
   return clientEntry.version
 }
 export const rawToLV2 = (cg: CausalGraphInner, v: Id): LV => (
-  rawToLV(cg, v[0], v[1])
+  idToLV(cg, v[0], v[1])
 )
 
-export const rawToLVList = (cg: CausalGraphInner, parents: Id[]): LV[] => (
-  parents.map(([agent, seq]) => rawToLV(cg, agent, seq))
+export const idToLVList = (cg: CausalGraphInner, ids: Id[]): LV[] => (
+  ids.map(([agent, seq]) => idToLV(cg, agent, seq))
 )
 
 //! Returns LV at start and end of the span.
@@ -1142,8 +1150,8 @@ export function *mergePartialVersions2(cg: CausalGraphInner, data: PartialSerial
 
 export function advanceVersionFromSerialized(cg: CausalGraphInner, data: PartialSerializedCG, version: LV[]): LV[] {
   for (const {agent, seq, len, parents} of data) {
-    const parentLVs = rawToLVList(cg, parents)
-    const vLast = rawToLV(cg, agent, seq + len - 1)
+    const parentLVs = idToLVList(cg, parents)
+    const vLast = idToLV(cg, agent, seq + len - 1)
     version = advanceFrontier(version, vLast, parentLVs)
   }
 

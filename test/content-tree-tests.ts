@@ -41,11 +41,6 @@ const TEST_FUNCS: ContentTreeFuncs<TestRange> = {
     };
   },
 
-  notify(val: TestRange, leaf: LeafIdx): void {
-    // No-op for tests or implement logging here
-    // console.log('notify!', val, leaf)
-  },
-
   truncate(val: TestRange, at: number): TestRange {
     assert(val.exists)
     assert(at > 0 && at < val.len)
@@ -452,7 +447,7 @@ function fuzz(seed: number, verbose: boolean = false) {
 // fuzz(123, true)
 // fuzz(297, true)
 
-for (let i = 1000;; i++) {
+for (let i = 0;; i++) {
   try {
     fuzz(i, false)
     console.log('PASS', i)

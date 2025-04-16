@@ -16,9 +16,9 @@
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
 import { CausalGraph, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
-import { cloneCursor, ContentCursor, ContentTree, ContentTreeFuncs, ctCreate } from './content-tree.js'
+import { cloneCursor, ContentCursor, ContentTree, ctCreate } from './content-tree.js'
 import { CRDTItem, createPlaceholderItem, ITEM_FUNCS, itemLen, ItemState, itemTakesUpCurSpace, itemTakesUpEndSpace } from './crdtitem.js'
-import { IndexTree, IndexTreeInner, itCreate, MAX_BOUND } from './index-tree.js'
+import { IndexTree, MAX_BOUND } from './index-tree.js'
 import { Marker, MARKER_FUNCS } from './marker.js'
 import { LeafIdx } from './tree-common.js'
 import {assert, assertEq, assertNe, max2, min2, pushRLEList} from './utils.js'
@@ -65,7 +65,7 @@ export function createOpLog<T = any>(): ListOpLog<T> {
   }
 }
 
-const opLen = (op: ListOp<any>): number => (
+export const opLen = (op: ListOp<any>): number => (
   op.type === 'ins'
     ? op.content.length
     : op.len
@@ -144,12 +144,15 @@ function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
     let len = a.content.length
     // Checking the version probably isn't relevant here because of how I'm using this function.
     // But its still good practice, I think. Dunno how this function will be used later.
-    return a.pos + len === b.pos
-      && a.version + len === b.version
+    if (a.pos + len === b.pos && a.version + len === b.version) {
+      a.content.push(...b.content)
+      return true
+    }
   } else if (a.type === 'del' && b.type === 'del') {
     // TODO: Also add backspace optimisation.
-    return a.pos === b.pos
-      && a.version + a.len === b.version
+    if (a.pos === b.pos && a.version + a.len === b.version) {
+      a.len += b.len
+    }
   } else return false
 }
 
@@ -205,11 +208,19 @@ export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: Id, parents: Id[], op: 
     }
   }
 
+  DBG: {
+    if (oplog.ops.length > 0) {
+      const last = oplog.ops[oplog.ops.length - 1]
+      assertEq(last.version + opLen(last), version)
+    }
+  }
+
   // Adding the version here constructs a new object.
   const opWithV: OpWithVersion<T> = {
     ...op,
     version
   }
+
   pushRLEList(tryMergeOpWithV, oplog.ops, opWithV)
   return lenAdded
 }
@@ -316,13 +327,14 @@ function advRetreatRange(ctx: EditContext, lvStart: LV, lvEnd: LV, isAdvance: bo
     } else {
       // This is the normal case.
       let { start: entryStart, end: entryEnd, val: marker } = ctx.index.getEntry(lvStart)
+      // console.log('looking up', lvStart, {entryStart, entryEnd, marker})
       const len = min2(entryEnd, lvEnd) - lvStart
 
       let targetStart, leaf = MAX_BOUND
 
       if (marker.type === 'ins') {
         leaf = marker.leaf
-        assertNe(leaf, MAX_BOUND)
+        assertNe(leaf, MAX_BOUND, 'Item not found in content')
         // We'll just modify from start to end in the inserted item itself.
         targetStart = lvStart
       } else {
@@ -358,11 +370,14 @@ function advRetreatRange(ctx: EditContext, lvStart: LV, lvEnd: LV, isAdvance: bo
 function applyRange<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, start: LV, end: LV) {
   if (start === end) return
 
+  // console.log('start', start, 'end', end)
   for (let op of oplogIterRange(oplog, start, end)) {
     let start = op.version
     let len = opLen(op)
     let end = start + len
     let cloned = false
+
+    // console.log('applying op', len, 'v range', op.version, op.version + len, 'op', op)
 
     // The operations may cross boundaries between users. We need to split them up along user agent
     // bounds.
@@ -471,6 +486,7 @@ function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agen
       endStateEverDeleted: false,
     }
 
+    // console.log('inserting item', item)
     const xfPos = integrate(ctx, cg, item, agent, seq, cursor, curPos, endPos)
     return [len, xfPos] // Inserts are always processed in their entirity.
   } else { // Deletes!

@@ -398,14 +398,14 @@ export function ct_cmp_cursor<V>(tree: ContentTreeInner<V>, a: ContentCursor, b:
     let n2 = tree.leaf_parents[c2]
 
     while (n1 !== n2) {
-        // Go up the tree.
-        c1 = n1
-        n1 = tree.leaf_parents[n1]
-        c2 = n2
-        n2 = tree.leaf_parents[n2]
+      // Go up the tree.
+      c1 = n1
+      n1 = tree.node_parents[n1]
+      c2 = n2
+      n2 = tree.node_parents[n2]
 
-        assertNe(n1, NULL_IDX)
-        assertNe(n2, NULL_IDX)
+      assertNe(n1, NULL_IDX)
+      assertNe(n2, NULL_IDX)
     }
 
     // Find the relative order of c1 and c2.

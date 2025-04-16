@@ -13,10 +13,11 @@ import * as fs from 'node:fs'
 import * as causalGraph from "../src/causal-graph.js"
 import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { ListOp, ListOpLog, checkoutSimpleString } from '../src/index.js';
+import { ListOp, ListOpLog, checkoutSimpleString, createOpLog, opLen, pushRemoteOp } from '../src/index.js';
 
 import assert from 'node:assert/strict'
 import consoleLib from 'console'
+import { assertEq } from '../src/utils.js';
 
 // This is the data format output from the `dt export` command.
 //
@@ -39,38 +40,41 @@ interface DTExport {
 }
 
 function importDTOpLog(data: DTExport): ListOpLog {
-  const ops: ListOp[] = []
-  const cg = causalGraph.createCG()
-
-  // I'm going to reuse the LVs from diamond types directly.
-  // But we need to shatter them.
-  // const nextSeqForAgent: Record<string, number> = {}
+  const oplog = createOpLog()
 
   for (const txn of data.txns) {
-    // const seqStart = nextSeqForAgent[txn.agent] ?? 0
-    const len = txn.span[1] - txn.span[0]
-    const seqStart = txn.seqStart
-    const seqEnd = seqStart + len
-    causalGraph.add(cg, txn.agent, seqStart, seqEnd, txn.parents)
+    let expectLV = txn.span[0]
+    const expectLVEnd = txn.span[1]
+    // The DT log file exports parents as LV numbers. I'm going to import using
+    // pushRemoteOp - but that expects external IDs instead of LVs.
+    let parents = oplog.cg.lvToIdList(txn.parents)
+    const agent = txn.agent
+    let seq = txn.seqStart
 
-    // nextSeqForAgent[txn.agent] = seqEnd
-
-    // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
     for (let [pos, delHere, insContent] of txn.ops) {
-      // console.log(pos, delHere, insContent)
       if ((delHere > 0) === (insContent !== '')) throw Error('Operation must be an insert or delete')
 
-      if (delHere > 0) {
-        // The deletes all happen at the same position.
-        ops.push({type: 'del', pos, len: delHere})
-      } else {
-        ops.push({type: 'ins', pos, content: [...insContent]})
-      }
+      const op: ListOp = delHere > 0
+        ? {type: 'del', pos, len: delHere}
+        : {type: 'ins', pos, content: [...insContent]}
+
+      const actualLv = oplog.cg.nextLV()
+      assertEq(expectLV, actualLv)
+
+      const len = opLen(op)
+
+      pushRemoteOp(oplog, [agent, seq], parents, op)
+
+      expectLV += len
+      seq += len
+      // After the first op, everything has parents of the previous op.
+      parents = [[agent, seq - 1]]
     }
   }
 
-  return {ops, cg}
+  return oplog
 }
+
 
 // This is the data format from the `dt export-trace` command.
 // This lets us run any editing trace in the concurrent editing traces repository:
@@ -91,54 +95,54 @@ interface ConcurrentTraceTxn {
   patches: [pos: number, del: number, insContent: string][],
 }
 
-function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
-  if (trace.kind !== 'concurrent') throw Error('Invalid data - not a concurrent editing trace')
+// function importFromConcurrentTrace(trace: ConcurrentTrace): ListOpLog {
+//   if (trace.kind !== 'concurrent') throw Error('Invalid data - not a concurrent editing trace')
 
-  const ops: ListOp[] = []
-  const cg = causalGraph.createCG()
+//   const ops: ListOp[] = []
+//   const cg = causalGraph.createCG()
 
-  const nextSeqForAgent: number[] = new Array(trace.numAgents).fill(0)
-  const lastLVOfTxn: LV[] = [] // txn index -> last version.
+//   const nextSeqForAgent: number[] = new Array(trace.numAgents).fill(0)
+//   const lastLVOfTxn: LV[] = [] // txn index -> last version.
 
-  let nextLV = 0
-  for (let i = 0; i < trace.txns.length; i++) {
-    const txn = trace.txns[i]
+//   let nextLV = 0
+//   for (let i = 0; i < trace.txns.length; i++) {
+//     const txn = trace.txns[i]
 
-    const parents = txn.parents.map(idx => lastLVOfTxn[idx])
-    const seqStart = nextSeqForAgent[txn.agent]
-    // The "length" of the transaction. Every delete and insert counts for 1.
-    const len = txn.patches.reduce((prev, [_pos, delHere, insContent]) => {
-      return prev + delHere + [...insContent].length
-    }, 0)
-    const seqEnd = seqStart + len
-    nextSeqForAgent[txn.agent] = seqEnd
+//     const parents = txn.parents.map(idx => lastLVOfTxn[idx])
+//     const seqStart = nextSeqForAgent[txn.agent]
+//     // The "length" of the transaction. Every delete and insert counts for 1.
+//     const len = txn.patches.reduce((prev, [_pos, delHere, insContent]) => {
+//       return prev + delHere + [...insContent].length
+//     }, 0)
+//     const seqEnd = seqStart + len
+//     nextSeqForAgent[txn.agent] = seqEnd
 
-    causalGraph.add(cg, `${txn.agent}`.padStart(7, ' '), seqStart, seqEnd, parents)
+//     causalGraph.add(cg, `${txn.agent}`.padStart(7, ' '), seqStart, seqEnd, parents)
 
-    // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
-    for (let [pos, delHere, insContent] of txn.patches) {
-      // console.log(pos, delHere, insContent)
-      if ((delHere > 0) === (insContent !== '')) throw Error('Patches must always be an insert or delete')
+//     // Then the ops. They need to be shattered for now, since I'm not storing them RLE.
+//     for (let [pos, delHere, insContent] of txn.patches) {
+//       // console.log(pos, delHere, insContent)
+//       if ((delHere > 0) === (insContent !== '')) throw Error('Patches must always be an insert or delete')
 
-      if (delHere > 0) {
-        for (let i = 0; i < delHere; i++) {
-          // The deletes all happen at the same position.
-          ops.push({type: 'del', pos})
-        }
-      } else {
-        for (const c of insContent) {
-          ops.push({type: 'ins', pos, content: c})
-          pos++
-        }
-      }
-    }
+//       if (delHere > 0) {
+//         for (let i = 0; i < delHere; i++) {
+//           // The deletes all happen at the same position.
+//           ops.push({type: 'del', pos})
+//         }
+//       } else {
+//         for (const c of insContent) {
+//           ops.push({type: 'ins', pos, content: c})
+//           pos++
+//         }
+//       }
+//     }
 
-    nextLV += len
-    lastLVOfTxn[i] = nextLV - 1
-  }
+//     nextLV += len
+//     lastLVOfTxn[i] = nextLV - 1
+//   }
 
-  return {ops, cg}
-}
+//   return {ops, cg}
+// }
 
 function check1(oplog: ListOpLog, expectedResult: string, verbose: boolean, n: number = 1) {
   if (verbose) console.log('processing', oplog.ops.length, 'ops...')
@@ -179,7 +183,7 @@ function debugCheck() {
   console.log('OK!')
 }
 
-debugCheck()
+// debugCheck()
 
 function conformance() {
   globalThis.console = new consoleLib.Console({
@@ -198,7 +202,7 @@ function conformance() {
   // check1(oplog, data.endContent, false)
 
   for (let i = 0; i < runs.length; i++) {
-    // console.log('conformance', i)
+    console.log('conformance', i)
     const data = runs[i]
     const oplog = importDTOpLog(data)
     check1(oplog, data.endContent, false)
@@ -210,24 +214,24 @@ function conformance() {
 
 conformance()
 
-const trimCG = (cg: causalGraph.CausalGraphInner, n: number) => {
-  const result = causalGraph.createCG()
-  for (let entry of cg.entries) {
-    let len = entry.vEnd - entry.version
+// const trimCG = (cg: causalGraph.CausalGraphInner, n: number) => {
+//   const result = causalGraph.createCG()
+//   for (let entry of cg.entries) {
+//     let len = entry.vEnd - entry.version
 
-    if (n < len) {
-      // Trim the entry.
-      entry = {
-        ...entry,
-        vEnd: entry.version + n
-      }
-      len = n
-    }
+//     if (n < len) {
+//       // Trim the entry.
+//       entry = {
+//         ...entry,
+//         vEnd: entry.version + n
+//       }
+//       len = n
+//     }
 
-    causalGraph.add(result, entry.agent, entry.seq, entry.seq + len, entry.parents)
-    n -= len
-    if (n <= 0) break
-  }
+//     causalGraph.add(result, entry.agent, entry.seq, entry.seq + len, entry.parents)
+//     n -= len
+//     if (n <= 0) break
+//   }
 
-  return result
-}
+//   return result
+// }

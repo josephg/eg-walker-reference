@@ -61,15 +61,10 @@ function importDTOpLog(data: DTExport): ListOpLog {
       if ((delHere > 0) === (insContent !== '')) throw Error('Operation must be an insert or delete')
 
       if (delHere > 0) {
-        for (let i = 0; i < delHere; i++) {
-          // The deletes all happen at the same position.
-          ops.push({type: 'del', pos})
-        }
+        // The deletes all happen at the same position.
+        ops.push({type: 'del', pos, len: delHere})
       } else {
-        for (const c of insContent) {
-          ops.push({type: 'ins', pos, content: c})
-          pos++
-        }
+        ops.push({type: 'ins', pos, content: [...insContent]})
       }
     }
   }

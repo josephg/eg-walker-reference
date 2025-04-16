@@ -15,9 +15,13 @@
 //
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
-import { CausalGraph, Id, intersectWithSummary, LV } from './causal-graph.js'
-import {} from './index-tree.js'
-import {assert, assertEq, pushRLEList} from './utils.js'
+import { CausalGraph, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
+import { cloneCursor, ContentCursor, ContentTree, ContentTreeFuncs, ctCreate } from './content-tree.js'
+import { CRDTItem, createPlaceholderItem, ITEM_FUNCS, itemLen, ItemState, itemTakesUpCurSpace, itemTakesUpEndSpace } from './crdtitem.js'
+import { IndexTree, IndexTreeInner, itCreate, MAX_BOUND } from './index-tree.js'
+import { Marker, MARKER_FUNCS } from './marker.js'
+import { LeafIdx } from './tree-common.js'
+import {assert, assertEq, assertNe, max2, min2, pushRLEList} from './utils.js'
 import bs from 'binary-search'
 
 /**
@@ -38,6 +42,7 @@ export type ListOp<T = any> = {
   type: 'del',
   pos: number,
   len: number, // Number of deleted items.
+  // TODO: Fwd / backward.
 }
 
 type OpWithVersion<T> = ListOp<T> & { version: LV }
@@ -180,13 +185,15 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
  * Returns the inserted length.
  */
 export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: Id, parents: Id[], op: ListOp<T>): number {
-  let lenAdded = oplog.cg.addRemote(id, 1, parents)
+  let len = opLen(op)
+  assert(len > 0)
+
+  const version = oplog.cg.nextLV() // Must be called before addRemote.
+  let lenAdded = oplog.cg.addRemote(id, len, parents)
   if (lenAdded === 0) return 0 // We already have this operation.
 
   // if (type === 'ins' && content === undefined) throw Error('Cannot add an insert operation with no content')
 
-  const version = oplog.cg.nextLV()
-  let len = opLen(op)
   if (len > lenAdded) {
     // Truncate the operation, keeping the tail.
     let sliceAt = len - lenAdded
@@ -251,58 +258,21 @@ export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
 
 // *** Merging changes ***
 
-enum ItemState {
-  NotYetInserted = -1,
-  Inserted = 0,
-  Deleted = 1, // Or some +ive number of times the item has been deleted.
-}
-
-// This is internal only, and used while reconstructing the changes.
-interface Item {
-  // This item represents a span of inserted characters from lvStart to lvEnd.
-  lvStart: LV,
-  lvEnd: LV,
-
-  /**
-   * The item's state at this point in the merge. This is initially set to Inserted,
-   * but if we reverse the operation out we'll end up in NotYetInserted. And if the item
-   * is deleted multiple times (by multiple concurrent users), we'll end up storing the
-   * number of times the item was deleted here.
-   */
-  curState: ItemState,
-
-  /**
-   * The item's state when *EVERYTHING* has been merged. This is always either Inserted or Deleted.
-   */
-  endState: ItemState, // Replace this with a boolean?
-
-  // -1 means start / end of document. This is the core list CRDT (sync9/fugue).
-  originLeft: LV | -1,
-
-  // -1 means the end of the document. This uses fugue's semantics.
-  // All right children have a rightParent of -1.
-  originRight: LV | -1,
-}
-
 interface EditContext {
   /**
    * All the items in document order. This list is grow-only, and will be spliced()
    * in as needed.
    */
-  items: Item[],
+  items: ContentTree<CRDTItem>,
 
   /**
-   * When we delete something, we store the LV of the item that was deleted. This is
-   * used when items are un-deleted (and re-deleted).
-   * delTarget[del_lv] = target_lv.
-   */
-  delTargets: number[],
-
-  /**
-   * This is the same set of items as above, but this time indexed by LV. This is
-   * used to make it fast & easy to activate and deactivate items.
-   */
-  itemsByLV: Item[],
+  * The index stores two pieces of information:
+  *
+  * - For inserts, it stores the corresponding leaf index in items of that particular
+  *   insert.
+  * - For deletes, it stores the delete's target.
+  */
+  index: IndexTree<Marker>,
 
   /**
    * Items in the EditContext have 2 version tags - curState and endState. These
@@ -313,72 +283,246 @@ interface EditContext {
   curVersion: number[],
 }
 
-function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
-  const op = oplog.ops[opId]
+function markerAt(ctx: EditContext, lv: LV): LeafIdx {
+  let marker = ctx.index.getEntry(lv).val
+  if (marker.type !== 'ins') throw Error('No marker at lv')
+  return marker.leaf
+}
 
-  // For inserts, the item being reactivated is just the op itself. For deletes,
-  // we need to look up the item in delTargets.
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
-  const item = ctx.itemsByLV[targetLV]
+function advRetreatRange(ctx: EditContext, lvStart: LV, lvEnd: LV, isAdvance: boolean) {
+  // This does advance / retreat of a whole range from lvStart to lvEnd.
+  //
+  // In theory, retreats should happen in reverse order (latest to earliest). But
+  // Because we're only incrementing and decrementing the state of various items
+  // in the tree, the order that visit items is mathematically irrelevant.
+  // So we'll just go in order, in all cases to keep the code simpler.
 
-  if (op.type === 'del') {
-    assert(item.curState >= ItemState.Inserted, 'Invalid state - adv Del but item is ' + item.curState)
-    assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
-    item.curState++
-  } else {
-    // Mark the item as inserted.
-    assertEq(item.curState, ItemState.NotYetInserted, 'Advance insert for already inserted item ' + opId)
-    item.curState = ItemState.Inserted
+  const incr = isAdvance ? 1 : -1
+
+  while (lvStart < lvEnd) {
+    // This is an optimisation. Try and just edit the inserted item at the cached
+    // cursor.
+    let cursor = ctx.items.tryFindItemAtCursor(lvStart)
+    if (cursor) {
+      // This makes things much faster. Note this will only happen for inserts -
+      // since deleted items aren't in the range tree.
+      let e = ctx.items.getItem(cursor)
+      let start = max2(lvStart, e.lvStart)
+      cursor.offset = start - e.lvStart
+      let maxLen = lvEnd - start
+
+      lvStart += ctx.items.mutateEntry(cursor, maxLen, e => { e.curState += incr })
+
+    } else {
+      // This is the normal case.
+      let { start: entryStart, end: entryEnd, val: marker } = ctx.index.getEntry(lvStart)
+      const len = min2(entryEnd, lvEnd) - lvStart
+
+      let targetStart, leaf = MAX_BOUND
+
+      if (marker.type === 'ins') {
+        leaf = marker.leaf
+        assertNe(leaf, MAX_BOUND)
+        // We'll just modify from start to end in the inserted item itself.
+        targetStart = lvStart
+      } else {
+        // For deletes, we modify the *target* of the delete.
+        let offset = lvStart - entryStart
+        targetStart = marker.fwd
+          ? marker.target + offset
+          : marker.target - offset - len
+      }
+
+      const targetEnd = targetStart + len
+      while (targetEnd > targetStart) {
+        let leaf_here = leaf !== MAX_BOUND ? leaf : markerAt(ctx, targetStart)
+
+        // We can't reuse the leaf ptr across subsequent invocations because we mutate the range
+        // tree. As such, the leaf index we requested earlier is invalid.
+        leaf = MAX_BOUND
+
+        let cursor = ctx.items.cachedCursorBeforeItem(targetStart, leaf_here)
+        targetStart += ctx.items.mutateEntry(cursor, targetEnd - targetStart, e => {
+          // Actually modify the element.
+          e.curState += incr
+        })
+
+        ctx.items.emplaceCursorUnknown(cursor)
+      }
+
+      lvStart += len
+    }
   }
 }
 
-function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
-  const op = oplog.ops[opId]
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
-  const item = ctx.itemsByLV[targetLV]
+function applyRange<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, start: LV, end: LV) {
+  if (start === end) return
 
-  if (op.type === 'del') {
-    // Undelete the item.
-    assert(item.curState >= ItemState.Deleted, 'Retreat delete but item not currently deleted')
-    assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
-  } else {
-    // Un-insert this item.
-    assertEq(item.curState, ItemState.Inserted, 'Retreat insert for item not in inserted state')
+  for (let op of oplogIterRange(oplog, start, end)) {
+    let start = op.version
+    let len = opLen(op)
+    let end = start + len
+    let cloned = false
+
+    // The operations may cross boundaries between users. We need to split them up along user agent
+    // bounds.
+    for (const cgEntry of oplog.cg.iterVersionsBetween(start, end)) {
+      assertEq(cgEntry.version, start)
+      assert(cgEntry.vEnd <= end)
+
+      while (len > 0) {
+        const [lenHere, xfPos] = applyXF(ctx, op, oplog.cg, cgEntry.agent, cgEntry.seq)
+
+        if (xfPos >= 0) {
+          // Apply the operation to the snapshot.
+          if (op.type === 'ins') {
+            snapshot?.splice(xfPos, 0, ...op.content)
+          } else {
+            snapshot?.splice(xfPos, lenHere)
+          }
+        }
+
+        len -= lenHere
+        if (len !== 0) {
+          // This is really gross, and I think I could mostly do without it.
+          // I might just have to hoist the version, position and del len.
+          // Note that applyXF will only split operations when they're deletes.
+          if (!cloned) {
+            op = { ...op }
+            cloned = true
+          }
+
+          op.version += lenHere
+          if (op.type === 'ins') {
+            // This won't actually happen, because applyXF only splits deletes...
+            op.pos += lenHere
+            op.content = op.content.slice(lenHere)
+          } else {
+            op.len -= lenHere
+          }
+        }
+      }
+
+      start = cgEntry.vEnd
+    }
   }
-
-  item.curState--
 }
 
+// -1 to indicate the delete already happened - and discard the operation.
+type TransformedPosition = number | -1
 
-const itemWidth = (state: ItemState): number => state === ItemState.Inserted ? 1 : 0
+// Apply the start of an operation to the internal editing content, returning the transformed
+// version of the operation.
+//
+// This function may not apply the entire operation. This only happens if the operation is a delete
+// and the delete is split by inserts or regions which have already been deleted. In that case, this
+// method must be called in a loop.
+//
+// Returns the amount of the op we've processed, and the transformed position (ie, where it goes in the output).
+function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agent: string, seq: number): [number, TransformedPosition] {
+  let len = opLen(op)
+  if (op.type === 'ins') {
+    let originLeft = -1
 
-interface DocCursor {
-  idx: number,
-  endPos: number,
-}
+    let curPos = op.pos
+    let endPos = 0
 
-function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
-  let curPos = 0
-  let endPos = 0
-  let i = 0
+    let cursor: ContentCursor
 
-  while (curPos < targetPos) {
-    if (i >= ctx.items.length) throw Error('Document is not long enough to find targetPos')
+    if (op.pos === 0) {
+      cursor = ctx.items.cursorAtStart()
+    } else {
+      // We need to read out the LV of the previous item to calculate originLeft.
+      // We'll get a cursor at op.pos - 1, read the LV there then advance the cursor
+      // to our insert position.
+      [endPos, cursor] = ctx.items.cursorBeforeCurPos(op.pos - 1)
+      const e = ctx.items.getItem(cursor)
+      originLeft = e.lvStart + cursor.offset
+      endPos += e.endStateEverDeleted ? 0 : 1
+      cursor.offset++
+    }
 
-    const item = ctx.items[i]
-    curPos += itemWidth(item.curState)
-    endPos += itemWidth(item.endState)
+    let originRight
+    // Advance the cursor to the next item. Because placeholders exist, this should always
+    // succeed.
+    if (!ctx.items.cursorRollNextItem(cursor)) throw Error('Could not roll next item')
 
-    i++
+    // We'll make another cursor and scan forward to find the origin right.
+    // origin right is the next item in the list which exists at this point in time.
+    let c2 = cloneCursor(cursor)
+    while (true) {
+      let e = ctx.items.getItem(c2)
+      if (e.curState !== ItemState.NotYetInserted) {
+        originRight = e.lvStart + cursor.offset
+        break
+      }
+      // Again, because of placeholder items we will always find something.
+      // If there were no placeholder items, if we run out of content, originRight should
+      // just be set to -1.
+      if (!ctx.items.cursorNextEntry(c2)) throw Error('Could not find right item')
+    }
+
+    const item: CRDTItem = {
+      lvStart: op.version,
+      lvEnd: op.version + len,
+      originLeft,
+      originRight,
+      curState: ItemState.Inserted,
+      endStateEverDeleted: false,
+    }
+
+    const xfPos = integrate(ctx, cg, item, agent, seq, cursor, curPos, endPos)
+    return [len, xfPos] // Inserts are always processed in their entirity.
+  } else { // Deletes!
+    // Delete as much as we can. We might not be able to delete everything because of
+    // double deletes and inserts inside the deleted range. This is extra annoying
+    // because we need to move backwards through the deleted items if we're rev.
+    assert(len > 0)
+    const fwd = true // TODO.
+
+    let curPos: number, endPos: number, cursor: ContentCursor
+
+    if (fwd) {
+      curPos = op.pos
+      ;[endPos, cursor] = ctx.items.cursorBeforeCurPos(curPos)
+    } else {
+      throw Error('Not implemented')
+    }
+
+    let e = ctx.items.getItem(cursor)
+    assertEq(e.curState, ItemState.Inserted)
+
+    // If this item has never been deleted, its time.
+    const everDeleted = e.endStateEverDeleted
+
+    const [len2, targetStart] = ctx.items.mutateEntry2(cursor, len, e => {
+      e.curState++
+      e.endStateEverDeleted = true
+      return e.lvStart
+    })
+    const targetEnd = targetStart + len2
+
+    // The cursor shouldn't have moved, since the item we traversed over was
+    // deleted.
+    ctx.items.emplaceCursor(curPos, endPos, cursor)
+
+    len = len2
+
+    let lvStart = op.version
+    ctx.index.setRange(lvStart, lvStart + len, {
+      type: 'del',
+      fwd,
+      target: fwd ? targetStart : targetEnd
+    })
+
+    return [len, everDeleted ? -1 : endPos]
   }
-
-  return { idx: i, endPos }
 }
 
-const findItemIdx = (ctx: EditContext, needle: number): number => {
-  const idx = ctx.items.findIndex(i => i.lv === needle)
-  if (idx === -1) throw Error('Could not find needle in items')
-  return idx
+function getCursorBefore(ctx: EditContext, lv: LV): ContentCursor {
+  if (lv < 0 || lv === MAX_BOUND) throw Error('Invalid LV')
+  let leaf = markerAt(ctx, lv)
+  return ctx.items.cursorBeforeItem(lv, leaf)
 }
 
 /**
@@ -407,157 +551,150 @@ const findItemIdx = (ctx: EditContext, needle: number): number => {
  *
  * Anyway, the long and short of it is: This function implements the Sync9 / Fugue CRDT.
  */
-function integrate(ctx: EditContext, cg: causalGraph.CausalGraphInner, newItem: Item, cursor: DocCursor) {
-  // If there's no concurrency, we don't need to scan.
-  if (cursor.idx >= ctx.items.length || ctx.items[cursor.idx].curState !== ItemState.NotYetInserted) return
-
-  // Sometimes we need to scan ahead and maybe insert there, or maybe insert here.
+function integrate(
+  ctx: EditContext, cg: CausalGraph,
+  item: CRDTItem, agent: string, seq: number,
+  cursor: ContentCursor, curCur: number, curEnd: number)
+{
+  // TODO: Cloning objects in javascript can be expensive. Move these close statements
+  // underneath the initial loop break.
+  const leftCursor = cloneCursor(cursor)
+  let scanCursor = cloneCursor(cursor)
+  let scanCur = curCur, scanEnd = curEnd
   let scanning = false
-  let scanIdx = cursor.idx
-  let scanEndPos = cursor.endPos
 
-  const leftIdx = cursor.idx - 1
-  const rightIdx = newItem.originRight === -1 ? ctx.items.length : findItemIdx(ctx, newItem.originRight)
+  const items = ctx.items
 
-  while (scanIdx < ctx.items.length) {
-    let other = ctx.items[scanIdx]
+  // I think rollNextItem can't ever return false because of placeholder items..?
+  // If cursor.offset != 0, we must be inserting in the middle of an already inserted
+  // item - in which case we don't need to do any of this.
+  //
+  // Probably don't need to check it each iteration?
+  while (cursor.offset === 0 && items.cursorRollNextItem(cursor)) {
+    const otherEntry = items.getItem(cursor)
 
-    // When concurrent inserts happen, the newly inserted item goes somewhere between the
-    // insert position itself (passed in through cursor) to the next item that existed
-    // when which the insert occurred. We can use the item's state to bound the search.
-    if (other.curState !== ItemState.NotYetInserted) break
+    // When concurrent edits happen, the range of insert locations goes from the insert
+    // position itself (passed in through cursor) to the next item which existed at the
+    // time in which the insert occurred.
+    let otherLv = otherEntry.lvStart
+    // This test is almost always true. (Ie, we basically always break here).
+    if (otherLv == item.originRight) break
 
-    if (other.lv === newItem.originRight) throw Error('invalid state')
+    // TODO: Is this necessary? Once fuzz tests pass, try commenting this line out.
+    // items.flushDelta()
 
-    // The index of the origin left / right for the other item.
-    let oleftIdx = other.originLeft === -1 ? -1 : findItemIdx(ctx, other.originLeft)
-    if (oleftIdx < leftIdx) break
-    else if (oleftIdx === leftIdx) {
-      let orightIdx = other.originRight === -1 ? ctx.items.length : findItemIdx(ctx, other.originRight)
+    assertEq(otherEntry.curState, ItemState.NotYetInserted)
 
-      if (orightIdx === rightIdx && causalGraph.lvCmp(cg, newItem.lv, other.lv) < 0) break
-      else scanning = orightIdx < rightIdx
-    }
+    // This code could be better optimized, but its already O(n * log n), and its extremely
+    // rare that you actually get concurrent inserts at the same location in the document
+    // anyway.
+    //
+    let otherLeftLV = cursor.offset === 0
+      ? otherEntry.originLeft
+      : otherEntry.lvStart + cursor.offset - 1
 
-    scanEndPos += itemWidth(other.endState)
-    scanIdx++
+    if (otherLeftLV === item.originLeft) {
+      // Tie break by looking at origin right.
+      if (otherEntry.originRight === item.originRight) {
+        // So much for that. Items are concurrent. Order by agent / seq.
+        let [otherAgent, otherSeq] = cg.lvToId(otherLv)
+        let insHere = agent === otherAgent
+          ? seq < otherSeq
+          : agent < otherAgent
+        if (insHere) break
+        else scanning = false
+      } else {
+        let myRightCursor = getCursorBefore(ctx, item.originRight)
+        let otherRightCursor = getCursorBefore(ctx, otherEntry.originRight)
 
-    if (!scanning) {
-      cursor.idx = scanIdx
-      cursor.endPos = scanEndPos
-    }
-  }
-
-  // We've found the position. Insert where the cursor points.
-}
-
-function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, opId: number) {
-  // This integrates the op into the document. This code is copied from reference-crdts.
-  const op = oplog.ops[opId]
-
-  if (op.type === 'del') {
-    // This is simple. We just need to mark the item as deleted and delete it from the output.
-    const cursor = findByCurPos(ctx, op.pos)
-    // Find the next item which we can actually delete.
-    // This will crash if we fall off the end of the items list. Thats ok - that means
-    // the data is invalid or we've messed something up somewhere.
-    while (ctx.items[cursor.idx].curState !== ItemState.Inserted) {
-      const item = ctx.items[cursor.idx]
-      cursor.endPos += itemWidth(item.endState)
-      cursor.idx++
-    }
-
-    const item = ctx.items[cursor.idx]
-    // Note this item may have already been deleted by a concurrent edit. In that case, endState
-    // will already be Deleted.
-    assert(item.curState === ItemState.Inserted, 'Trying to delete an item which is not currently Inserted')
-
-    // Delete it in the output.
-    if (item.endState === ItemState.Inserted) {
-      if (snapshot) snapshot.splice(cursor.endPos, 1)
-    }
-
-    // And mark the item as deleted. For the curState, we can't get into a "double deletes"
-    // state here, because item.curState must be Inserted right now. For endState, we
-    // don't care about double deletes at all.
-    item.curState = item.endState = ItemState.Deleted
-
-    // And mark that this delete corresponds to *that* item.
-    ctx.delTargets[opId] = item.lv
-  } else {
-    // Insert! This is much more complicated as we need to do the Yjs integration.
-    const cursor = findByCurPos(ctx, op.pos)
-    // The cursor position is at the first valid insert location.
-    if (cursor.idx > 0) {
-      // Its valid because the previous item must be inserted in the current state.
-      const prevItem = ctx.items[cursor.idx - 1]
-      assert(prevItem.curState === ItemState.Inserted)
-    }
-
-    // Anyway, originLeft is just the LV of the item to our left.
-    const originLeft = cursor.idx === 0 ? -1 : ctx.items[cursor.idx - 1].lv
-
-    // originRight is the ID of the next item which isn't in the NYI curState.
-    let rightParent = -1
-
-    // Scan to find the newly inserted item's right parent.
-    for (let i = cursor.idx; i < ctx.items.length; i++) {
-      const nextItem = ctx.items[i]
-      if (nextItem.curState !== ItemState.NotYetInserted) {
-        // We'll take this item for the "right origin" and right bound (highest index) that we can insert at.
-        rightParent = (nextItem.originLeft === originLeft) ? nextItem.lv : -1
-        break
+        // Set scanning based on how the origin right entries are sorted.
+        if (items.compareCursors(otherRightCursor, myRightCursor) < 0) {
+          if (!scanning) {
+            scanning = true
+            scanCursor = cloneCursor(cursor)
+            scanCur = curCur
+            scanEnd = curEnd
+          }
+        } else {
+          scanning = false
+        }
       }
-    } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
+    } else {
+      // Compare the position of the origin left items. I'll create a cursor to the
+      // other items' origin left, and then compare the cursors in the content tree.
+      let otherLeftCursor
+      if (otherLeftLV === -1) otherLeftCursor = items.cursorAtStart()
+      else {
+        // Create a cursor *after* the other item's origin left.
+        otherLeftCursor = getCursorBefore(ctx, otherLeftLV)
+        otherLeftCursor.offset++
+        items.cursorRollNextItem(otherLeftCursor)
+      }
 
-    const newItem: Item = {
-      curState: ItemState.Inserted,
-      endState: ItemState.Inserted,
-      lv: opId,
-      originLeft,
-      originRight: rightParent,
-    }
-    ctx.itemsByLV[opId] = newItem
-
-    // This will update the cursor to find the location we want to insert the item.
-    integrate(ctx, oplog.cg, newItem, cursor)
-
-    ctx.items.splice(cursor.idx, 0, newItem)
-
-    // And finally, actually insert it in the resulting document.
-    if (snapshot) snapshot.splice(cursor.endPos, 0, op.content!)
-  }
-}
-
-// This is a helper debugging function, for printing out the internal state of the
-// editing context.
-function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
-  console.log('---- DT STATE ----')
-
-  const depth: Record<number, number> = {}
-  depth[-1] = 0
-
-  for (const item of ctx.items) {
-    const isLeftChild = true
-    const parent = isLeftChild ? item.originLeft : item.originRight
-    const d = parent === -1 ? 0 : depth[parent] + 1
-
-    depth[item.lv] = d
-    const lvToStr = (lv: number) => {
-      if (lv === -1) return 'ROOT'
-      const rv = causalGraph.lvToRaw(oplog.cg, lv)
-      return `[${rv[0]},${rv[1]}]`
+      if (items.compareCursors(otherLeftCursor, leftCursor) < 0) break
     }
 
-    const op = oplog.ops[item.lv]
-    if (op.type !== 'ins') throw Error('Invalid state') // This avoids a typescript type error.
-    const value = item.endState === ItemState.Deleted ? null : op.content
+    // We can skip immediately to comparing the next entry in the content tree.
+    // This is quite surprising - but the fuzzer backs me up that doing this has no
+    // effect on the resulting document order.
+    curCur += itemTakesUpCurSpace(otherEntry) ? itemLen(otherEntry) : 0
+    curEnd += itemTakesUpEndSpace(otherEntry) ? itemLen(otherEntry) : 0
 
-    let content = `${value == null ? '.' : value} at ${lvToStr(item.lv)} (left ${lvToStr(item.originLeft)})`
-    content += ` right ${lvToStr(item.originRight)}`
-    console.log(`${'| '.repeat(d)}${content}`)
+    // We could do something sensible if we reach the end of the list, but placeholder data means
+    // we never will.
+    if (!items.cursorNextEntry(cursor)) throw Error('Invalid - reached end of content tree')
   }
+
+  if (scanning) {
+    cursor = scanCursor
+    curCur = scanCur
+    curEnd = scanEnd
+  }
+
+  // Finally we can insert!
+  const len = itemLen(item)
+  assert(itemTakesUpCurSpace(item))
+  assert(itemTakesUpEndSpace(item))
+
+  items.insert(item, cursor)
+
+  // The cursor position needs to be incremented by the length of item.
+  // (We're cheating a little here since we know the item will always be in the inserted state)
+  items.emplaceCursor(curCur + len, curEnd + len, cursor)
+
+  // The resulting inserted position in the snapshot.
+  return curEnd
 }
+
+// // This is a helper debugging function, for printing out the internal state of the
+// // editing context.
+// function debugPrintCtx<T>(ctx: EditContext, oplog: ListOpLog<T>) {
+//   console.log('---- DT STATE ----')
+
+//   const depth: Record<number, number> = {}
+//   depth[-1] = 0
+
+//   for (const item of ctx.items) {
+//     const isLeftChild = true
+//     const parent = isLeftChild ? item.originLeft : item.originRight
+//     const d = parent === -1 ? 0 : depth[parent] + 1
+
+//     depth[item.lv] = d
+//     const lvToStr = (lv: number) => {
+//       if (lv === -1) return 'ROOT'
+//       const rv = causalGraph.lvToRaw(oplog.cg, lv)
+//       return `[${rv[0]},${rv[1]}]`
+//     }
+
+//     const op = oplog.ops[item.lv]
+//     if (op.type !== 'ins') throw Error('Invalid state') // This avoids a typescript type error.
+//     const value = item.endState === ItemState.Deleted ? null : op.content
+
+//     let content = `${value == null ? '.' : value} at ${lvToStr(item.lv)} (left ${lvToStr(item.originLeft)})`
+//     content += ` right ${lvToStr(item.originRight)}`
+//     console.log(`${'| '.repeat(d)}${content}`)
+//   }
+// }
 
 /**
  * Traverse and apply the operations in the oplog.
@@ -580,7 +717,7 @@ export function traverseAndApply<T>(
   oplog: ListOpLog<T>,
   snapshot: T[] | null,
   fromOp: number = 0,
-  toOp: number = causalGraph.nextLV(oplog.cg) // Same as oplog.ops.length.
+  toOp: number = oplog.cg.nextLV() // Same as oplog.ops.length.
 ) {
   // What we need to do here is walk through all the operations
   // one by one. When we get to each operation, if the current version
@@ -594,40 +731,37 @@ export function traverseAndApply<T>(
   // But here I'll just process all the operations in the order we're
   // storing them in, since thats easier. And they're already stored in a
   // topologically sorted order.
-  for (const entry of causalGraph.iterVersionsBetween(oplog.cg, fromOp, toOp)) {
-    const {aOnly, bOnly} = causalGraph.diff(oplog.cg, ctx.curVersion, entry.parents)
+
+  for (const entry of oplog.cg.iterVersionsBetween(fromOp, toOp)) {
+    const {aOnly, bOnly} = oplog.cg.diff(ctx.curVersion, entry.parents)
 
     // The causal graph library run-length encodes everything.
     // These are all ranges of operations.
     const retreat = aOnly
     const advance = bOnly
-    const consume = [entry.version, entry.vEnd] // Operations to apply.
+
+    // Operations to apply.
+    const consumeStart = entry.version
+    const consumeEnd = entry.vEnd
+
+    // console.log('retreat', retreat, 'advance', advance, 'consume', [consumeStart, consumeEnd])
 
     // Retreat.
-    // Note we're processing these in reverse order to make sure items
-    // are undeleted before being un-inserted.
-    for (let i = retreat.length - 1; i >= 0; i--) {
-      const [start, end] = retreat[i]
-      for (let lv = end - 1; lv >= start; lv--) {
-        retreat1(ctx, oplog, lv)
-      }
+    for (const [start, end] of retreat) {
+      advRetreatRange(ctx, start, end, false)
     }
 
     // Advance.
     for (const [start, end] of advance) {
-      for (let lv = start; lv < end; lv++) {
-        advance1(ctx, oplog, lv)
-      }
+      advRetreatRange(ctx, start, end, true)
     }
 
     // Then apply the operation.
-    const [start, end] = consume
-    for (let lv = start; lv < end; lv++) {
-      apply1(ctx, snapshot, oplog, lv)
-    }
+    applyRange(ctx, snapshot, oplog, consumeStart, consumeEnd)
 
     // After processing these operations, we're at the last version in the range.
-    ctx.curVersion = [entry.vEnd - 1]
+    ctx.curVersion.length = 1
+    ctx.curVersion[0] = entry.vEnd - 1
   }
 }
 
@@ -640,13 +774,21 @@ export function createEmptyBranch(): Branch<any> {
   return { snapshot: [], version: [] }
 }
 
+function createEditContext(curVersion: LV[] = []): EditContext {
+  const index = new IndexTree(MARKER_FUNCS)
+  const items = new ContentTree(ITEM_FUNCS, (e, leaf) => {
+    // console.log('notify', e, leaf)
+    index.setRange(e.lvStart, e.lvEnd, {type: 'ins', leaf})
+  })
+
+  // The items list is initialized with a single placeholder item.
+  items.setSingleItem(createPlaceholderItem())
+
+  return { items, index, curVersion }
+}
+
 export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
-  const ctx: EditContext = {
-    items: [],
-    delTargets: new Array(oplog.ops.length).fill(-1),
-    itemsByLV: new Array(oplog.ops.length).fill(null),
-    curVersion: [],
-  }
+  let ctx = createEditContext()
 
   // The resulting document snapshot
   const snapshot: T[] = []
@@ -654,7 +796,7 @@ export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
 
   return {
     snapshot,
-    version: oplog.cg.heads.slice()
+    version: oplog.cg.heads().slice()
   }
 }
 
@@ -674,7 +816,7 @@ export function checkoutSimpleString(oplog: ListOpLog<string>): string {
 // at some version) to be updated with new changes.
 
 
-export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>, mergeVersion: number[] = oplog.cg.heads) {
+export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>, mergeVersion: number[] = oplog.cg.heads()) {
   // We have an existing checkout of a list document. We want to merge some new changes in the oplog into
   // our local branch.
   //
@@ -698,12 +840,12 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
   // First lets see what we've got. I'll divide the conflicting range into two groups:
   // - The conflict set. (Stuff we've already processed that we need to process again).
   // - The new operations we need to merge
-  const newOps: causalGraph.LVRange[] = []
-  const conflictOps: causalGraph.LVRange[] = []
+  const newOps: LVRange[] = []
+  const conflictOps: LVRange[] = []
 
-  let commonAncestor = causalGraph.findConflicting(oplog.cg, branch.version, mergeVersion, (span, flag) => {
+  let commonAncestor = oplog.cg.findConflicting(branch.version, mergeVersion, (span, flag) => {
       // Note this visitor function visits these operations in reverse order.
-      const target = flag === causalGraph.DiffFlag.B ? newOps : conflictOps
+      const target = flag === DiffFlag.B ? newOps : conflictOps
       // target.push(span)
 
       let last
@@ -716,38 +858,8 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
   // newOps and conflictOps will be filled in in reverse order. Fix!
   newOps.reverse(); conflictOps.reverse()
 
-  const ctx: EditContext = {
-    items: [],
-    delTargets: new Array(oplog.ops.length).fill(-1),
-    itemsByLV: new Array(oplog.ops.length).fill(null),
-    curVersion: commonAncestor,
-  }
+  const ctx = createEditContext()
 
-  // We need some placeholder items to correspond to the document as it looked at the commonAncestor state.
-  // The placeholderLength needs to be at least the size that the document was at the time. This is inefficient but simple.
-  // let conflictOpLen = conflictOps.reduce((sum, [start, end]) => sum + end - start, 0)
-  // const placeholderLength = branch.data.length + conflictOpLen
-  const placeholderLength = Math.max(...branch.version) + 1
-  // const placeholderLength = Math.max(...commonAncestor)
-  // Also we must not use IDs that will show up in the actual document.
-  // assert(placeholderLength <= Math.min(...commonAncestor))
-
-  for (let i = 0; i < placeholderLength; i++) {
-    const opId = i + 1e12
-    const item: Item = {
-      // TODO: Consider using some weird IDs here instead of normal numbers to make it clear.
-      // Right now these IDs are also used in ctx.itemsByLV, but if that becomes a Map instead it would work better.
-      lv: opId,
-      curState: ItemState.Inserted,
-      endState: ItemState.Inserted,
-      originLeft: -1,
-      originRight: -1,
-    }
-    ctx.items.push(item)
-    ctx.itemsByLV[opId] = item
-  }
-
-  // let ctxVersion = commonAncestor
   for (const [start, end] of conflictOps) {
     // console.log('conflict', start, end)
     // While processing the conflicting ops, we don't pass the document state because we don't
@@ -764,5 +876,15 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
 
   // Set the branch version to the union of the versions.
   // We can't use ctxVersion since it will probably just be the last version we visited.
-  branch.version = causalGraph.findDominators(oplog.cg, [...branch.version, ...mergeVersion])
+  branch.version = oplog.cg.findDominators([...branch.version, ...mergeVersion])
 }
+
+
+
+// --------
+
+// const oplog = createOpLog()
+// pushRemoteOp(oplog, ['a', 0], [], { type: 'ins', pos: 0, content: [0] })
+// pushRemoteOp(oplog, ['b', 0], [], { type: 'ins', pos: 0, content: [1] })
+// // console.log('oplog', oplog)
+// console.log(checkoutSimple(oplog))

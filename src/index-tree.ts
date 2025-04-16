@@ -17,7 +17,32 @@ import {
 
 export const MAX_BOUND = Number.MAX_SAFE_INTEGER
 
-interface IndexTree<V> {
+export class IndexTree<V> {
+  inner: IndexTreeInner<V>
+
+  constructor(funcs: ITContent<V>) {
+    this.inner = itCreate(funcs)
+  }
+
+  /** Get the entry at the specified offset. This will return the largest run of values which
+   * contains the specified index.
+   */
+  getEntry(lv: LV) {
+    return itGetEntry(this.inner, lv)
+  }
+
+  setRange(start: LV, end: LV, value: V) {
+    itSetRange(this.inner, start, end, value)
+  }
+
+  dbgPrint() {
+    for (const { start, end, val } of iter(this.inner)) {
+      console.log(`${start} - ${end}: ${JSON.stringify(val)}`)
+    }
+  }
+}
+
+export interface IndexTreeInner<V> {
   leaves: Leaves<V>,
   nodes: Nodes,
 
@@ -41,9 +66,9 @@ export interface ITContent<V> {
    * Try to append other to self. If possible, self is modified (if necessary) and true is
    * returned.
    */
-  try_append(val: V, offset: number, other: V, other_len: number): boolean
+  tryAppend(val: V, offset: number, other: V, other_len: number): boolean
 
-  at_offset(val: V, offset: number): V
+  atOffset(val: V, offset: number): V
 
   // eq(val: V, other: V, upto_len: number): boolean
 
@@ -131,7 +156,7 @@ function pushNode(nodes: Nodes): number {
 }
 
 
-export function itCreate<V>(funcs: ITContent<V>): IndexTree<V> {
+export function itCreate<V>(funcs: ITContent<V>): IndexTreeInner<V> {
   // An index tree is never empty. We initialize a new tree with a single leaf node.
   let leaves: Leaves<V> = {
     bounds: [],
@@ -167,7 +192,7 @@ export function itCreate<V>(funcs: ITContent<V>): IndexTree<V> {
   }
 }
 
-export function itClear<V>(tree: IndexTree<V>) {
+export function itClear<V>(tree: IndexTreeInner<V>) {
   tree.leaves.bounds.length = 0
   tree.leaves.values.length = 0
   tree.leaves.next_leaves.length = 0
@@ -265,7 +290,7 @@ pub trait IndexContent: Debug + Copy {
 }
 */
 
-function create_new_root_node<V>(tree: IndexTree<V>, lower_bound: LV, child_a: number, split_point: LV, child_b: number): NodeIdx {
+function create_new_root_node<V>(tree: IndexTreeInner<V>, lower_bound: LV, child_a: number, split_point: LV, child_b: number): NodeIdx {
   tree.height++
   const new_root_idx = pushNode(tree.nodes)
   const i = new_root_idx * NODE_CHILDREN
@@ -280,7 +305,7 @@ function create_new_root_node<V>(tree: IndexTree<V>, lower_bound: LV, child_a: n
 }
 
 /** This method always splits a node in the middle. This isn't always optimal, but its simpler. */
-function split_node<V>(tree: IndexTree<V>, old_idx: NodeIdx, children_are_leaves: boolean): NodeIdx {
+function split_node<V>(tree: IndexTreeInner<V>, old_idx: NodeIdx, children_are_leaves: boolean): NodeIdx {
   // Split a full internal node into 2 nodes.
   // let new_node_idx = tree.nodes.parents.length
   const new_node_idx = pushNode(tree.nodes)
@@ -337,7 +362,7 @@ function split_node<V>(tree: IndexTree<V>, old_idx: NodeIdx, children_are_leaves
   return new_node_idx
 }
 
-function insert_into_node<V>(tree: IndexTree<V>, node_idx: NodeIdx, new_child_key: LV, new_child_idx: number, after_child: number, children_are_leaves: boolean): NodeIdx {
+function insert_into_node<V>(tree: IndexTreeInner<V>, node_idx: NodeIdx, new_child_key: LV, new_child_idx: number, after_child: number, children_are_leaves: boolean): NodeIdx {
   // let mut node = &mut self[node_idx];
 
   // Where will the child go? I wonder if the compiler can do anything smart with this...
@@ -379,7 +404,7 @@ function insert_into_node<V>(tree: IndexTree<V>, node_idx: NodeIdx, new_child_ke
 
  * Returns the index of the new leaf.
  */
-function split_leaf<V>(tree: IndexTree<V>, old_idx: LeafIdx): LeafIdx {
+function split_leaf<V>(tree: IndexTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   let old_height = tree.height
   let leaves = tree.leaves
 
@@ -434,7 +459,7 @@ function split_leaf<V>(tree: IndexTree<V>, old_idx: LeafIdx): LeafIdx {
 }
 
 
-function make_space_in_leaf_for<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: number, space_wanted: number): [LeafIdx, number] {
+function make_space_in_leaf_for<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: number, space_wanted: number): [LeafIdx, number] {
   assert(space_wanted === 1 || space_wanted === 2)
 
   if (!leaf_has_space(tree.leaves, leaf_idx, space_wanted)) {
@@ -507,7 +532,7 @@ function elem_upper_bound<V>(leaves: Leaves<V>, leaf_idx: LeafIdx, elem_idx: num
 // *** Cursor functions ***
 
 // Helper function to check that the cursor is at some specified position.
-function check_cursor_at<V>(tree: IndexTree<V>, cursor: IndexCursor, lv: LV, at_end: boolean): void {
+function check_cursor_at<V>(tree: IndexTreeInner<V>, cursor: IndexCursor, lv: LV, at_end: boolean): void {
   DEV: {
     const leaf_base = cursor.leaf_idx * LEAF_CHILDREN
     const lower_bound = tree.leaves.bounds[leaf_base + cursor.elem_idx]
@@ -523,7 +548,7 @@ function check_cursor_at<V>(tree: IndexTree<V>, cursor: IndexCursor, lv: LV, at_
   }
 }
 
-function cursor_to_next<V>(tree: IndexTree<V>, cursor: IndexCursor) {
+function cursor_to_next<V>(tree: IndexTreeInner<V>, cursor: IndexCursor) {
   const leaf_base = cursor.leaf_idx * LEAF_CHILDREN;
   const next_idx = cursor.elem_idx + 1;
 
@@ -537,7 +562,7 @@ function cursor_to_next<V>(tree: IndexTree<V>, cursor: IndexCursor) {
 }
 
 // Generate a cursor which points at the specified LV.
-function cursor_at<V>(tree: IndexTree<V>, lv: LV): IndexCursor {
+function cursor_at<V>(tree: IndexTreeInner<V>, lv: LV): IndexCursor {
   assert(lv < MAX_BOUND)
 
   if (tree.cursor_key === lv) {
@@ -593,7 +618,7 @@ export interface RleDRun<V> {
 
 /// Get the entry at the specified offset. This will return the largest run of values which
 /// contains the specified index.
-export function itGetEntry<V>(tree: IndexTree<V>, lv: LV): RleDRun<V> {
+export function itGetEntry<V>(tree: IndexTreeInner<V>, lv: LV): RleDRun<V> {
   const cursor = cursor_at(tree, lv);
 
   DEV: check_cursor_at(tree, cursor, lv, false);
@@ -622,7 +647,7 @@ export function itGetEntry<V>(tree: IndexTree<V>, lv: LV): RleDRun<V> {
 
 // After the first item in a leaf has been modified, we need to walk up the node tree to update
 // the start LV values.
-function recursively_update_nodes<V>(tree: IndexTree<V>, node_idx: NodeIdx, child: number, new_start: LV): void {
+function recursively_update_nodes<V>(tree: IndexTreeInner<V>, node_idx: NodeIdx, child: number, new_start: LV): void {
   while (node_idx !== NULL_IDX) {
     const node_base = node_idx * NODE_CHILDREN
     const child_idx = find_child_idx_in_node(tree.nodes, node_idx, child);
@@ -646,7 +671,7 @@ function recursively_update_nodes<V>(tree: IndexTree<V>, node_idx: NodeIdx, chil
 
 // Helper function to trim leaf end
 // Returns true if we need to keep trimming stuff after this leaf.
-function trim_leaf_end<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: number, end: LV): boolean {
+function trim_leaf_end<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: number, end: LV): boolean {
   assert(elem_idx >= 1);
   let leaves = tree.leaves
   let upper_bound = leaf_upper_bound(leaves, leaf_idx)
@@ -685,7 +710,7 @@ function trim_leaf_end<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: numbe
     if (end < b) {
       assert(leaves.bounds[leaf_base + del_to] < end)
 
-      leaves.values[leaf_base + del_to] = tree.content_funcs.at_offset(
+      leaves.values[leaf_base + del_to] = tree.content_funcs.atOffset(
         leaves.values[leaf_base + del_to],
         end - leaves.bounds[leaf_base + del_to]
       )
@@ -722,7 +747,7 @@ function trim_leaf_end<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: numbe
 }
 
 
-function upper_bound_scan<V>(tree: IndexTree<V>, idx: number, height: number): number {
+function upper_bound_scan<V>(tree: IndexTreeInner<V>, idx: number, height: number): number {
   while (height > 0) {
     // Descend to the last child of this item.
     const node_base = idx * NODE_CHILDREN
@@ -746,7 +771,7 @@ function upper_bound_scan<V>(tree: IndexTree<V>, idx: number, height: number): n
   return leaf_upper_bound(tree.leaves, idx);
 }
 
-function trim_node_start<V>(tree: IndexTree<V>, idx: number, end: LV, height: number): LeafIdx {
+function trim_node_start<V>(tree: IndexTreeInner<V>, idx: number, end: LV, height: number): LeafIdx {
   while (height > 0) {
     const node_base = idx * NODE_CHILDREN
 
@@ -777,7 +802,7 @@ function trim_node_start<V>(tree: IndexTree<V>, idx: number, end: LV, height: nu
   if (keep_elem_idx >= 1) {
     leaf_remove_children(tree.leaves, idx, 0, keep_elem_idx);
   }
-  tree.leaves.values[leaf_base] = tree.content_funcs.at_offset(
+  tree.leaves.values[leaf_base] = tree.content_funcs.atOffset(
     tree.leaves.values[leaf_base],
     end - tree.leaves.bounds[leaf_base]
   )
@@ -788,7 +813,7 @@ function trim_node_start<V>(tree: IndexTree<V>, idx: number, end: LV, height: nu
   return idx
 }
 
-function trim_node_end_after_child<V>(tree: IndexTree<V>, node_idx: NodeIdx, child: number, end: LV, height: number): LeafIdx {
+function trim_node_end_after_child<V>(tree: IndexTreeInner<V>, node_idx: NodeIdx, child: number, end: LV, height: number): LeafIdx {
   assert(height >= 1);
 
   const node_base = node_idx * NODE_CHILDREN;
@@ -835,7 +860,7 @@ function trim_node_end_after_child<V>(tree: IndexTree<V>, node_idx: NodeIdx, chi
 
 // This method clears everything out of the way for the specified element, to set its
 // upper bound correctly.
-function extend_upper_range<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: number, end: LV): void {
+function extend_upper_range<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: number, end: LV): void {
   // This may need to do a lot of work:
   // - The leaf we're currently inside of needs to be trimmed, from elem_idx onwards
   // - If we continue, the parent leaf needs to be trimmed, and its parent and so on. This may
@@ -856,7 +881,7 @@ function extend_upper_range<V>(tree: IndexTree<V>, leaf_idx: LeafIdx, elem_idx: 
   }
 }
 
-export function itSetRange<V>(tree: IndexTree<V>, start: number, end: number, data: V): void {
+export function itSetRange<V>(tree: IndexTreeInner<V>, start: number, end: number, data: V): void {
   if (start === end) return;
   const cursor = cursor_at(tree, start);
 
@@ -876,7 +901,7 @@ export function itSetRange<V>(tree: IndexTree<V>, start: number, end: number, da
 }
 
 
-function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: number, end: number, data: V): [IndexCursor, boolean] {
+function set_range_internal<V>(tree: IndexTreeInner<V>, cursor: IndexCursor, start: number, end: number, data: V): [IndexCursor, boolean] {
   let { leaf_idx, elem_idx } = cursor
 
   let leaves = tree.leaves
@@ -891,7 +916,7 @@ function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: n
 
   let cur_start = leaves.bounds[leaf_base + elem_idx];
 
-  const { at_offset, try_append } = tree.content_funcs
+  const { atOffset: at_offset, tryAppend: try_append } = tree.content_funcs
 
   if (cur_start === start && elem_idx > 0) {
     // Try and append it to the previous item. This is strictly unnecessary, but should help with
@@ -1083,7 +1108,7 @@ function set_range_internal<V>(tree: IndexTree<V>, cursor: IndexCursor, start: n
   return [{ leaf_idx, elem_idx }, end_is_end];
 }
 
-function first_leaf<V>(tree: IndexTree<V>): LeafIdx {
+function first_leaf<V>(tree: IndexTreeInner<V>): LeafIdx {
   DEV: {
     let idx = tree.root;
     for (let i = 0; i < tree.height; i++) {
@@ -1098,7 +1123,7 @@ function first_leaf<V>(tree: IndexTree<V>): LeafIdx {
 //   return tree.leaves.bounds[0] === MAX_BOUND;
 // }
 
-export function itCountItems<V>(tree: IndexTree<V>): number {
+export function itCountItems<V>(tree: IndexTreeInner<V>): number {
   let count = 0;
   let leaf_idx = first_leaf(tree);
 
@@ -1116,7 +1141,7 @@ export function itCountItems<V>(tree: IndexTree<V>): number {
 }
 
 
-function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
+function* iter<V>(tree: IndexTreeInner<V>): Generator<RleDRun<V>, void, unknown> {
   const leaves = tree.leaves
   let leaf_idx = first_leaf(tree)
   let prev_val: V | undefined
@@ -1132,7 +1157,7 @@ function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
       let upper_bound = elem_upper_bound(tree.leaves, leaf_idx, i)
       let new_val = leaves.values[leaf_base + i]
 
-      if (prev_val === undefined || !tree.content_funcs.try_append(prev_val, lower_bound - prev_bound, new_val, upper_bound - lower_bound)) {
+      if (prev_val === undefined || !tree.content_funcs.tryAppend(prev_val, lower_bound - prev_bound, new_val, upper_bound - lower_bound)) {
         // Yield the previous element.
         if (prev_val !== undefined) yield { start: prev_bound, end: lower_bound, val: prev_val }
         prev_bound = lower_bound
@@ -1181,7 +1206,7 @@ function* iter<V>(tree: IndexTree<V>): Generator<RleDRun<V>, void, unknown> {
 
 // *** Debug checking
 
-function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expect_start: LV | null, expect_parent: NodeIdx, expect_next_leaf: LeafIdx): LeafIdx {
+function dbg_check_walk<V>(tree: IndexTreeInner<V>, idx: number, height: number, expect_start: LV | null, expect_parent: NodeIdx, expect_next_leaf: LeafIdx): LeafIdx {
   if (height > 0) {
     // Visiting a node.
     assert(idx < tree.nodes.parents.length)
@@ -1233,7 +1258,7 @@ function dbg_check_walk<V>(tree: IndexTree<V>, idx: number, height: number, expe
 }
 
 
-export function itDbgCheck<V>(tree: IndexTree<V>): void {
+export function itDbgCheck<V>(tree: IndexTreeInner<V>): void {
   // Invariants:
   // - All index markers point to the node which contains the specified item.
   // - Except for the root item, all leaves must have at least 1 data entry.

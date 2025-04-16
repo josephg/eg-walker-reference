@@ -4,11 +4,11 @@ import SeedRandom from "seed-random";
 
 type SimpleContent = number | null
 const simpleFuncs: ITContent<SimpleContent> = {
-  at_offset(val, offset) {
+  atOffset(val, offset) {
     return val == null ? null : val + offset
   },
 
-  try_append(val, offset, other, other_len) {
+  tryAppend(val, offset, other, other_len) {
     assert(offset > 0)
     assert(other_len > 0)
 
@@ -47,7 +47,7 @@ function makeSimpleContainer<V>(funcs: ITContent<V>): SimpleContainer<V> {
         let currentVal = this.list[0];
 
         for (let i = 1; i < this.list.length; i++) {
-          if (!this.funcs.try_append(currentVal, i - start, this.list[i], 1)) {
+          if (!this.funcs.tryAppend(currentVal, i - start, this.list[i], 1)) {
             yield {start, end: i, val: currentVal};
             start = i;
             currentVal = this.list[i];

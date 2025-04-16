@@ -5,11 +5,11 @@ import SeedRandom from "seed-random";
 
 type SimpleContent = number | null
 const simpleFuncs: ITContent<SimpleContent> = {
-  at_offset(val, offset) {
+  atOffset(val, offset) {
     return val == null ? null : val + offset
   },
 
-  try_append(val, offset, other, other_len) {
+  tryAppend(val, offset, other, other_len) {
     assert(offset > 0)
     assert(other_len > 0)
 

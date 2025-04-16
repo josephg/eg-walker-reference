@@ -32,3 +32,8 @@ export const pushRLEList = <T>(tryAppend: (a: T, b: T) => boolean, list: T[], ne
     list.push(newItem)
   }
 }
+
+
+
+export const min2 = (a: number, b: number) => a < b ? a : b
+export const max2 = (a: number, b: number) => a > b ? a : b

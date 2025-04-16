@@ -452,7 +452,7 @@ function fuzz(seed: number, verbose: boolean = false) {
 // fuzz(123, true)
 // fuzz(297, true)
 
-for (let i = 0; i < 1000; i++) {
+for (let i = 1000;; i++) {
   try {
     fuzz(i, false)
     console.log('PASS', i)

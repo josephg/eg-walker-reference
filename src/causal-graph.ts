@@ -12,7 +12,7 @@
 
 import PriorityQueue from 'priorityqueuejs'
 import bs from 'binary-search'
-import { assert, pushRLEList } from './utils.js'
+import { assert, max2, min2, pushRLEList } from './utils.js'
 
 export interface VersionSummary {[agent: string]: [number, number][]}
 
@@ -24,8 +24,78 @@ export type LV = number
 /** Local version range. Range is [start, end). */
 export type LVRange = [start: number, end: number]
 
-const min2 = (a: number, b: number) => a < b ? a : b
-const max2 = (a: number, b: number) => a > b ? a : b
+
+
+export class CausalGraph {
+  inner: CausalGraphInner
+
+  constructor() {
+    this.inner = createCG()
+  }
+
+  nextSeqForAgent(agent: string): number {
+    return nextSeqForAgent(this.inner, agent)
+  }
+
+  add(agent: string, seqStart: number, seqEnd: number, parents?: LV[]): number {
+    return add(this.inner, agent, seqStart, seqEnd, parents)
+  }
+
+  addRemote(id: Id, len: number = 1, rawParents?: Id[]): number {
+    return addRemote(this.inner, id, len, rawParents)
+  }
+
+  dbgCheck() {
+    checkCG(this.inner)
+  }
+
+  lvToId(lv: LV): Id {
+    return lvToId(this.inner, lv)
+  }
+
+  lvToIdList(frontier: LV[]) {
+    return lvToIdList(this.inner, frontier)
+  }
+
+  heads() {
+    return this.inner.heads
+  }
+
+  summarizeVersion() {
+    return summarizeVersion(this.inner)
+  }
+
+  serializeDiff(ranges: LVRange[]) {
+    return serializeDiff(this.inner, ranges)
+  }
+
+  mergePartialVersions(cgDiff: PartialSerializedCG) {
+    return mergePartialVersions(this.inner, cgDiff)
+  }
+
+
+  diff(a: LV[], b: LV[]) {
+    return diff(this.inner, a, b)
+  }
+
+  findConflicting(a: LV[], b: LV[], visit: (range: LVRange, flag: DiffFlag) => void): LV[] {
+    return findConflicting(this.inner, a, b, visit)
+  }
+
+  nextLV() {
+    return nextLV(this.inner)
+  }
+
+  iterVersionsBetween(vStart: LV, vEnd: LV): Generator<CGEntry> {
+    return iterVersionsBetween(this.inner, vStart, vEnd)
+  }
+
+  findDominators(versions: LV[]): LV[] {
+    return findDominators(this.inner, versions)
+  }
+}
+
+
 
 type CGEntry = {
   version: LV,
@@ -360,7 +430,7 @@ export const rawVersionCmp = ([a1, s1]: Id, [a2, s2]: Id) => (
 )
 
 export const lvCmp = (cg: CausalGraphInner, a: LV, b: LV) => (
-  rawVersionCmp(lvToRaw(cg, a), lvToRaw(cg, b))
+  rawVersionCmp(lvToId(cg, a), lvToId(cg, b))
 )
 
 // export const tieBreakVersions = (cg: CausalGraph, data: LV[]): LV => {
@@ -405,19 +475,20 @@ export const findEntryContaining = (cg: CausalGraphInner, v: LV): [CGEntry, numb
   return [e, offset]
 }
 
-export const lvToRawWithParents = (cg: CausalGraphInner, v: LV): [string, number, LV[]] => {
+export const lvToIdWithParents = (cg: CausalGraphInner, v: LV): [string, number, LV[]] => {
   const [e, offset] = findEntryContaining(cg, v)
   const parents = offset === 0 ? e.parents : [v-1]
   return [e.agent, e.seq + offset, parents]
 }
 
-export const lvToRaw = (cg: CausalGraphInner, v: LV): Id => {
+export const lvToId = (cg: CausalGraphInner, v: LV): Id => {
   const [e, offset] = findEntryContaining(cg, v)
   return [e.agent, e.seq + offset]
   // causalGraph.entries[localIndex]
 }
+
 export const lvToIdList = (cg: CausalGraphInner, parents: LV[] = cg.heads): Id[] => (
-  parents.map(v => lvToRaw(cg, v))
+  parents.map(v => lvToId(cg, v))
 )
 
 
@@ -1090,61 +1161,6 @@ export function checkCG(cg: CausalGraphInner) {
 
   // TODO: Also check the entry sequence matches the mapping.
 }
-
-
-export class CausalGraph {
-  inner: CausalGraphInner
-
-  constructor() {
-    this.inner = createCG()
-  }
-
-  nextSeqForAgent(agent: string): number {
-    return nextSeqForAgent(this.inner, agent)
-  }
-
-  add(agent: string, seqStart: number, seqEnd: number, parents?: LV[]): number {
-    return add(this.inner, agent, seqStart, seqEnd, parents)
-  }
-
-  addRemote(id: Id, len: number = 1, rawParents?: Id[]): number {
-    return addRemote(this.inner, id, len, rawParents)
-  }
-
-  dbgCheck() {
-    checkCG(this.inner)
-  }
-
-  lvToIdList(frontier: LV[]) {
-    return lvToIdList(this.inner, frontier)
-  }
-
-  heads() {
-    return this.inner.heads
-  }
-
-  summarizeVersion() {
-    return summarizeVersion(this.inner)
-  }
-
-  serializeDiff(ranges: LVRange[]) {
-    return serializeDiff(this.inner, ranges)
-  }
-
-  mergePartialVersions(cgDiff: PartialSerializedCG) {
-    return mergePartialVersions(this.inner, cgDiff)
-  }
-
-
-  diff(a: LV[], b: LV[]) {
-    return diff(this.inner, a, b)
-  }
-
-  nextLV() {
-    return nextLV(this.inner)
-  }
-}
-
 
 
 

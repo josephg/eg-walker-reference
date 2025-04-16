@@ -42,7 +42,9 @@ interface DTExport {
 function importDTOpLog(data: DTExport): ListOpLog {
   const oplog = createOpLog()
 
+  // for (const txn of data.txns.slice(0, 3)) {
   for (const txn of data.txns) {
+    // console.log(txn)
     let expectLV = txn.span[0]
     const expectLVEnd = txn.span[1]
     // The DT log file exports parents as LV numbers. I'm going to import using
@@ -63,6 +65,7 @@ function importDTOpLog(data: DTExport): ListOpLog {
 
       const len = opLen(op)
 
+      // console.log('PRO', expectLV, agent, seq, parents, op)
       pushRemoteOp(oplog, [agent, seq], parents, op)
 
       expectLV += len
@@ -70,6 +73,8 @@ function importDTOpLog(data: DTExport): ListOpLog {
       // After the first op, everything has parents of the previous op.
       parents = [[agent, seq - 1]]
     }
+
+    assertEq(expectLVEnd, oplog.cg.nextLV())
   }
 
   return oplog
@@ -183,7 +188,7 @@ function debugCheck() {
   console.log('OK!')
 }
 
-// debugCheck()
+debugCheck()
 
 function conformance() {
   globalThis.console = new consoleLib.Console({
@@ -191,22 +196,26 @@ function conformance() {
     inspectOptions: {depth: null}
   })
 
-  const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance.json', 'utf-8'))
+  const runs: DTExport[] = fs.readFileSync('testdata/conformance.json', 'utf-8')
+    .split('\n')
+    .filter(x => x !== '')
+    .map(line => JSON.parse(line))
+
   // const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance-fugue.json', 'utf-8'))
   // const runs: DTExport[] = JSON.parse(fs.readFileSync('testdata/conformance-fugue2.json', 'utf-8'))
   console.log(`Running ${runs.length} conformance tests...`)
 
-  // const data = runs[542]
-  // console.log(data)
-  // const oplog = importDTOpLog(data)
-  // check1(oplog, data.endContent, false)
-
   for (let i = 0; i < runs.length; i++) {
-    console.log('conformance', i)
+    // console.log('conformance', i)
     const data = runs[i]
     const oplog = importDTOpLog(data)
-    check1(oplog, data.endContent, false)
-    // console.log(data.endContent)
+
+    try {
+      check1(oplog, data.endContent, false)
+    } catch (e) {
+      console.error('Failed during conformance test', i)
+      throw e
+    }
   }
 
   console.log('All tests pass!')

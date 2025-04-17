@@ -37,15 +37,6 @@ export interface CRDTItem {
   originRight: LV | -1,
 }
 
-const ITEM_NONE: CRDTItem = Object.freeze({
-  lvStart: 0,
-  lvEnd: 0,
-  curState: ItemState.Inserted,
-  endStateEverDeleted: false,
-  originLeft: -1,
-  originRight: -1,
-})
-
 // A placeholder item corresponds to the set of items which existed in the
 // document before we started merging changes. See the paper for details.
 export const createPlaceholderItem = (): CRDTItem => ({
@@ -75,8 +66,6 @@ export const ITEM_FUNCS: ContentTreeFuncs<CRDTItem> = {
       : 0
   },
   raw_len: itemLen,
-  exists(val) { return val.lvEnd > 0 },
-  none() { return ITEM_NONE },
 
   truncate(val, offset): CRDTItem {
     let result: CRDTItem = {

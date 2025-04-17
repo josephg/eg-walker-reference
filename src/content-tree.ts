@@ -108,7 +108,7 @@ export class ContentTree<V> {
 }
 
 interface ContentTreeInner<V> {
-  leaf_values: V[] // num leaves * LEAF_CHILDREN.
+  leaf_values: (V | null)[] // num leaves * LEAF_CHILDREN.
   leaf_next: LeafIdx[] // num leaves
   leaf_parents: NodeIdx[] // num leaves
 
@@ -157,10 +157,10 @@ export interface ContentTreeFuncs<V> { // : SplitableSpan + MergableSpan
   raw_len(val: V): number,
 
   /// The default item must "not exist".
-  exists(val: V): boolean,
+  // exists(val: V): boolean,
   // takes_up_space<const IS_CUR: bool>(&self): bool;
 
-  none(): V, // TODO: This should probably just be a constant.
+  // none(): V, // TODO: This should probably just be a constant.
 
   // V is truncated. Returns the remainder.
   truncate(val: V, at: number): V,
@@ -195,11 +195,10 @@ export function cloneCursor(cursor: ContentCursor): ContentCursor {
 
 function pushLeaf<V>(tree: ContentTreeInner<V>): LeafIdx {
   const newIdx = tree.leaf_next.length
-//   const newLen = newIdx + 1
 
-  for (let i = 0; i < LEAF_CHILDREN; i++) {
-    tree.leaf_values.push(tree.funcs.none()) // TODO: Consider sharing this item.
-  }
+  const base = newIdx * LEAF_CHILDREN
+  tree.leaf_values.length = base + LEAF_CHILDREN
+  tree.leaf_values.fill(null, base, base + LEAF_CHILDREN)
 
   tree.leaf_next.push(NULL_IDX)
   tree.leaf_parents.push(NULL_IDX)
@@ -222,7 +221,7 @@ function pushNode<V>(tree: ContentTreeInner<V>): NodeIdx {
 
 function leaf_has_space<V>(tree: ContentTreeInner<V>, leaf_idx: LeafIdx, space_wanted: number): boolean {
   if (space_wanted === 0) return true // Is this necessary?
-  return !tree.funcs.exists(tree.leaf_values[(leaf_idx + 1) * LEAF_CHILDREN - space_wanted]);
+  return tree.leaf_values[(leaf_idx + 1) * LEAF_CHILDREN - space_wanted] == null
 }
 
 function leaf_is_last<V>(tree: ContentTreeInner<V>, leaf_idx: LeafIdx): boolean {
@@ -298,7 +297,7 @@ const cur_value_offset = (cursor: ContentCursor) => (
 
 /** Returns true if the cursor lands in an item. Or false if we're at the end of the tree. */
 function cursor_roll_next_item<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): boolean {
-  if (cursor.offset < tree.funcs.raw_len(tree.leaf_values[cur_value_offset(cursor)])) {
+  if (cursor.offset < tree.funcs.raw_len(tree.leaf_values[cur_value_offset(cursor)]!)) {
     // We're inside an element. Continue.
     return true
   }
@@ -312,7 +311,7 @@ function nextEntry<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): boolean
   cursor.offset = 0;
 
   // if (cursor.elem_idx >= LEAF_CHILDREN || !tree.funcs.exists(tree.leaf_values[cur_value_offset(cursor)])) {
-  if (cursor.elem_idx < LEAF_CHILDREN && tree.funcs.exists(tree.leaf_values[cur_value_offset(cursor)])) {
+  if (cursor.elem_idx < LEAF_CHILDREN && tree.leaf_values[cur_value_offset(cursor)] != null) {
     // We're still inside one of the leaf's children.
     return true
   }
@@ -331,6 +330,7 @@ function nextEntry<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): boolean
 export function ct_inc_cursor_offset<V>(tree: ContentTreeInner<V>, cursor: ContentCursor) {
   if (DEBUG) {
     let e = tree.leaf_values[cur_value_offset(cursor)]
+    assert(e != null)
     let len = tree.funcs.raw_len(e)
     assert(cursor.offset < len)
   }
@@ -339,7 +339,9 @@ export function ct_inc_cursor_offset<V>(tree: ContentTreeInner<V>, cursor: Conte
 }
 
 export function ct_get_item<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): V {
-  return tree.leaf_values[cur_value_offset(cursor)]
+  const e = tree.leaf_values[cur_value_offset(cursor)]
+  if (DEBUG) assert(e != null)
+  return e!
 }
 
 function assert_cursor_at<V>(tree: ContentTreeInner<V>, cursor: ContentCursor, exp_cur: number, exp_end: number) {
@@ -348,12 +350,14 @@ function assert_cursor_at<V>(tree: ContentTreeInner<V>, cursor: ContentCursor, e
 
     let idx_off = cur_value_offset(cursor)
     let e = tree.leaf_values[idx_off]
+    assert(e != null)
     assert(cursor.offset <= tree.funcs.raw_len(e))
     if (tree.funcs.takes_up_space_cur(e)) { cur += cursor.offset }
     if (tree.funcs.takes_up_space_end(e)) { end += cursor.offset }
 
     for (let i = cursor.leaf_idx * LEAF_CHILDREN; i < idx_off; i++) {
       e = tree.leaf_values[i]
+      assert(e != null)
       cur += tree.funcs.content_len_cur(e)
       end += tree.funcs.content_len_end(e)
     }
@@ -417,12 +421,6 @@ export function ct_cmp_cursor<V>(tree: ContentTreeInner<V>, a: ContentCursor, b:
 // *** Content tree methods! (finally!) ***
 
 export function ctCreate<V>(funcs: ContentTreeFuncs<V>, notify: NotifyFn<V> = () => { }): ContentTreeInner<V> {
-  if (DEBUG) {
-    assertEq(funcs.content_len_cur(funcs.none()), 0)
-    assertEq(funcs.content_len_end(funcs.none()), 0)
-    assertEq(funcs.exists(funcs.none()), false)
-  }
-
   let tree: ContentTreeInner<V> = {
     leaf_values: [],
     leaf_next: [],
@@ -483,7 +481,7 @@ export function ctClear<V>(tree: ContentTreeInner<V>) {
 
 export function ctSetSingleItem<V>(tree: ContentTreeInner<V>, item: V) {
   if (DEBUG) {
-    assert(!tree.funcs.exists(tree.leaf_values[0]))
+    assert(tree.leaf_values[0] == null)
     assertEq(tree.upd_leaf, MAX_BOUND)
   }
 
@@ -495,7 +493,7 @@ export function ctSetSingleItem<V>(tree: ContentTreeInner<V>, item: V) {
 
 export function ctIsEmpty(tree: ContentTreeInner<any>): boolean {
   assert(tree.leaf_values.length > 0) // Must always be true since we add a leaf right away.
-  return !tree.funcs.exists(tree.leaf_values[0])
+  return tree.leaf_values[0] == null
 }
 
 function create_new_root_node<V>(tree: ContentTreeInner<V>, child_a: number, child_b: number, b_cur: number, b_end: number): NodeIdx {
@@ -670,7 +668,7 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
 
   for (let i = LEAF_SPLIT_POINT; i < LEAF_CHILDREN; i++) {
     const val = tree.leaf_values[old_leaf_base + i]
-    if (tree.funcs.exists(val)) {
+    if (val != null) {
       tree.notify(val, new_leaf_idx)
       new_cur += tree.funcs.content_len_cur(val)
       new_end += tree.funcs.content_len_end(val)
@@ -704,14 +702,9 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   // We'll steal the second half of the items in old_leaf.
   // Copy elements from old leaf to new leaf
   tree.leaf_values.copyWithin(new_leaf_base, old_leaf_base + LEAF_SPLIT_POINT, old_leaf_base + LEAF_CHILDREN)
-  // for (let i = 0; i < LEAF_SPLIT_POINT; i++) {
-  //   tree.leaf_values[new_leaf_base + i] = tree.leaf_values[old_leaf_base + LEAF_SPLIT_POINT + i]
-  // }
 
   // Clear the second half of the old leaf
-  for (let i = LEAF_SPLIT_POINT; i < LEAF_CHILDREN; i++) {
-    tree.leaf_values[old_leaf_base + i] = tree.funcs.none() // TODO: Reuse a "none object".
-  }
+  tree.leaf_values.fill(null, old_leaf_base + LEAF_SPLIT_POINT, old_leaf_base + LEAF_CHILDREN)
 
   // Update the old leaf's next pointer
   tree.leaf_next[old_idx] = new_leaf_idx
@@ -810,7 +803,7 @@ export function ct_insert<V>(
   notify_here: boolean
 ): void {
   if (DEBUG) {
-    assert(tree.funcs.exists(item))
+    assert(item != null)
   }
 
   let leaf_idx = cursor.leaf_idx
@@ -822,13 +815,13 @@ export function ct_insert<V>(
   if (offset === 0 && elem_idx > 0) {
     // Roll the cursor back to opportunistically see if we can append
     elem_idx -= 1
-    offset = tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx])
+    offset = tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx]!)
     // No remainder needed in this case
-  } else if (offset === 0 || offset === tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx])) {
+  } else if (offset === 0 || offset === tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx]!)) {
     // No need for remainder in this case either
   } else {
     // We're in the middle of an item. Split it
-    const entry = tree.leaf_values[leaf_base + elem_idx]
+    const entry = tree.leaf_values[leaf_base + elem_idx]!
     remainder = tree.funcs.truncate(entry, offset)
     dec_delta_update_by(tree, leaf_idx, remainder)
     // We don't need to update cursor since it's already where it needs to be
@@ -836,11 +829,11 @@ export function ct_insert<V>(
 
   if (offset !== 0) {
     if (DEBUG) {
-      assertEq(offset, tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx]))
+      assertEq(offset, tree.funcs.raw_len(tree.leaf_values[leaf_base + elem_idx]!))
     }
 
     // We're at the end of an element. Try and append here.
-    const cur_entry = tree.leaf_values[leaf_base + elem_idx]
+    const cur_entry = tree.leaf_values[leaf_base + elem_idx]!
     if (tree.funcs.tryAppend(cur_entry, item)) {
       // In this case, item should not have been modified. Which is important - since we need to
       // read back some of its properties here!
@@ -864,12 +857,6 @@ export function ct_insert<V>(
             // This is a bit of a hack. Move the cursor to the item before the remainder.
             cursor.leaf_idx = leaf_idx_2
             cursor.elem_idx = elem_idx_2 - 1
-          // } else {
-          //   // The remainder is on a subsequent element. This is fine, but now delta
-          //   // refers to the item the remainder is on, not the cursor element.
-          //   // So we need to flush it.
-          //   // TODO: Urgh this is gross. Rewrite me!
-          //   flush_delta_and_clear(tree, leaf_idx_2, cursor)
           }
         }
       }
@@ -883,7 +870,7 @@ export function ct_insert<V>(
     const next_entry_idx = leaf_base + elem_idx
     if (remainder === null
       && elem_idx < LEAF_CHILDREN
-      && tree.funcs.exists(tree.leaf_values[next_entry_idx]))
+      && tree.leaf_values[next_entry_idx] != null)
     {
       const cur_entry = tree.leaf_values[next_entry_idx]
 
@@ -936,6 +923,7 @@ export function ct_mutate_entry<V, R>(
   const leaf = cursor.leaf_idx
   const leaf_base = leaf * LEAF_CHILDREN
   const entry = tree.leaf_values[leaf_base + cursor.elem_idx]
+  assert(entry != null)
   const entry_len = tree.funcs.raw_len(entry)
 
   if (cursor.offset === 0 && entry_len <= replace_max) {
@@ -947,14 +935,13 @@ export function ct_mutate_entry<V, R>(
 
     // We'll also do a brief best-effort attempt at merging this modified item with
     // subsequent items in the leaf
-    let modified_entry = tree.leaf_values[leaf_base + cursor.elem_idx]
+    let modified_entry = tree.leaf_values[leaf_base + cursor.elem_idx]!
     const scan_start = cursor.elem_idx + 1
     let elem_idx2 = scan_start
 
     while (elem_idx2 < LEAF_CHILDREN) {
       const next_entry = tree.leaf_values[leaf_base + elem_idx2]
-      if (!tree.funcs.exists(next_entry)
-        || !tree.funcs.tryAppend(modified_entry, next_entry)) break
+      if (next_entry == null || !tree.funcs.tryAppend(modified_entry, next_entry)) break
 
       elem_idx2++
     }
@@ -968,7 +955,7 @@ export function ct_mutate_entry<V, R>(
           leaf_base + elem_idx2,
           leaf_base + LEAF_CHILDREN
         )
-        .fill(tree.funcs.none(),
+        .fill(null,
           leaf_base + LEAF_CHILDREN - (elem_idx2 - scan_start),
           leaf_base + LEAF_CHILDREN
         )
@@ -1111,8 +1098,7 @@ function find_cur_pos_in_leaf(tree: ContentTreeInner<any>, idx: LeafIdx, at_cur_
 function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): number {
   let leaf_base = cursor.leaf_idx * LEAF_CHILDREN
   const e = tree.leaf_values[leaf_base + cursor.elem_idx];
-
-  if (!tree.funcs.exists(e)) return 0
+  if (e == null) return 0
 
   let len = tree.funcs.raw_len(e)
   if (tree.funcs.takes_up_space_cur(e) && cursor.offset < len) {
@@ -1132,7 +1118,7 @@ function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: Cont
     // This walks linearly through the nodes. It would be "big-O faster" to walk up and down
     // the tree in this case, but I think this will usually be faster in practice.
     if (cursor.elem_idx >= LEAF_CHILDREN ||
-        !tree.funcs.exists(tree.leaf_values[leaf_base + cursor.elem_idx])) {
+        tree.leaf_values[leaf_base + cursor.elem_idx] == null) {
       // Go to next leaf
       const next_leaf = tree.leaf_next[cursor.leaf_idx]
 
@@ -1144,7 +1130,8 @@ function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: Cont
       cursor.elem_idx = 0
     }
 
-    const e = tree.leaf_values[leaf_base + cursor.elem_idx]
+    const e = tree.leaf_values[leaf_base + cursor.elem_idx]!
+    if (DEBUG) assert(e != null)
     if (tree.funcs.takes_up_space_cur(e)) {
       break
     }
@@ -1199,7 +1186,7 @@ export function ct_cursor_before_cur_pos<V>(tree: ContentTreeInner<V>, content_p
   // We're guaranteed that the item under elem_idx has size in CUR. Well, unless the tree is empty.
   if (DEBUG) {
     assert((content_pos == 0 && ctIsEmpty(tree))
-      || tree.funcs.takes_up_space_cur(tree.leaf_values[leaf_base + elem_idx]))
+      || tree.funcs.takes_up_space_cur(tree.leaf_values[leaf_base + elem_idx]!))
   }
 
   // Create and return the cursor
@@ -1248,7 +1235,7 @@ export function ct_try_find_item_at_cursor<V>(tree: ContentTreeInner<V>, lv: LV)
     let base = cursor.leaf_idx * LEAF_CHILDREN
     for (let i = 0; i < LEAF_CHILDREN; i++) {
       let e = tree.leaf_values[base + i]
-      if (!tree.funcs.exists(e)) break
+      if (e == null) break
 
       let offset = tree.funcs.find(e, lv)
       if (offset >= 0) {
@@ -1274,7 +1261,7 @@ export function ct_cursor_before_item<V>(tree: ContentTreeInner<V>, id: LV, leaf
 
   for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
     const e = tree.leaf_values[leaf_base + elem_idx]
-    if (!tree.funcs.exists(e)) break
+    if (e == null) break
 
     const offset = tree.funcs.find(e, id)
     if (offset >= 0) {
@@ -1300,27 +1287,29 @@ export function ct_cached_cursor_before_item<V>(
 ): ContentCursor {
   let cursor = tree.cursor
   if (cursor) {
-    tree.cursor = null;
+    tree.cursor = null
 
-    // const cur = tree.cursor_cur;
-    // const end = tree.cursor_end;
-    tree.cursor_cur = tree.cursor_end = MAX_BOUND;
+    // const cur = tree.cursor_cur
+    // const end = tree.cursor_end
+    tree.cursor_cur = tree.cursor_end = MAX_BOUND
 
-    const item_offset = cur_value_offset(cursor);
-    const e = tree.leaf_values[item_offset];
+    const item_offset = cur_value_offset(cursor)
+    const e = tree.leaf_values[item_offset]
+    assert(e != null)
 
-    const actual_offset = tree.funcs.find(e, id);
+    const actual_offset = tree.funcs.find(e, id)
     if (actual_offset >= 0) {
-      cursor.offset = actual_offset;
+      cursor.offset = actual_offset
       return cursor
     } else if (cursor.elem_idx > 0) {
       // Search within the previous item.
-      const prev_elem = tree.leaf_values[item_offset - 1];
-      const actual_offset = tree.funcs.find(prev_elem, id);
+      const prev_elem = tree.leaf_values[item_offset - 1]
+      assert(prev_elem != null)
+      const actual_offset = tree.funcs.find(prev_elem, id)
 
       if (actual_offset >= 0) {
-        cursor.elem_idx -= 1;
-        cursor.offset = actual_offset;
+        cursor.elem_idx -= 1
+        cursor.offset = actual_offset
 
         return cursor
       }
@@ -1366,7 +1355,7 @@ export function ct_print_tree(tree: ContentTreeInner<any>) {
       const base = idx * LEAF_CHILDREN
       for (let i = 0; i < LEAF_CHILDREN; i++) {
         let val = tree.leaf_values[base + i]
-        if (!tree.funcs.exists(val)) break
+        if (val == null) break
         console.log(`${indStr(indent+1)}${i}: ${JSON.stringify(val)}`)
       }
       console.log(`${indStr(indent+1)}next leaf ${tree.leaf_next[idx]}`)
@@ -1418,7 +1407,7 @@ function debug_check_walk_internal<V>(
     let leaf_size = { cur: 0, end: 0 }
     for (let i = 0; i < LEAF_CHILDREN; i++) {
       const e = tree.leaf_values[idx * LEAF_CHILDREN + i]
-      if (tree.funcs.exists(e)) {
+      if (e != null) {
         leaf_size.cur += tree.funcs.content_len_cur(e)
         leaf_size.end += tree.funcs.content_len_end(e)
       }
@@ -1495,6 +1484,7 @@ function debug_check_walk<V>(tree: ContentTreeInner<V>) {
     // Make sure the cursor points to a valid value with a length at least offset.
     // (This is a regression if so)
     let elem = tree.leaf_values[cur_value_offset(tree.cursor)]
+    assert(elem != null)
     assert(tree.funcs.raw_len(elem) >= tree.cursor.offset)
   }
 }
@@ -1523,14 +1513,14 @@ export function ct_debug_check<V>(tree: ContentTreeInner<V>): void {
 
     if (leaf_idx === 0) {
       // First leaf can be empty - but only if the whole data structure is empty
-      if (!tree.funcs.exists(tree.leaf_values[0])) {
+      if (tree.leaf_values[0] == null) {
         assert(tree.leaf_next[leaf_idx] === NULL_IDX);
         assert(tree._cur_len === 0);
         assert(tree._end_len === 0);
       }
     } else {
       // Only the first leaf can be empty
-      assert(tree.funcs.exists(tree.leaf_values[leaf_idx * LEAF_CHILDREN]));
+      assert(tree.leaf_values[leaf_idx * LEAF_CHILDREN] != null);
     }
 
     if (tree.leaf_next[leaf_idx] === NULL_IDX) break;
@@ -1560,7 +1550,7 @@ export function* ct_iter<V>(tree: ContentTreeInner<V>): Generator<V> {
     // Iterate through elements in the current leaf
     for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
       const item = tree.leaf_values[leaf_base + elem_idx];
-      if (!tree.funcs.exists(item)) break;
+      if (item == null) break;
 
       yield item;
     }
@@ -1578,7 +1568,7 @@ export function* ct_iter_rle<V>(tree: ContentTreeInner<V>): Generator<V> {
 
     for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
       const item = tree.leaf_values[leaf_base + elem_idx];
-      if (!tree.funcs.exists(item)) break;
+      if (item == null) break;
 
       if (last == null) last = {... item}
       else if (tree.funcs.tryAppend(last, item)) { }

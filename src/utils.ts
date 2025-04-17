@@ -1,5 +1,5 @@
 // ** A couple utility methods **
-export function assert(expr: boolean, msg?: string) {
+export function assert(expr: boolean, msg?: string): asserts expr {
   if (!expr) {
     const err = Error(msg != null ? `Assertion failed: ${msg}` : 'Assertion failed')
     Error.captureStackTrace(err, assert)

@@ -8,48 +8,34 @@ interface TestRange {
   id: number;
   len: number;
   is_activated: boolean;
-  exists: boolean;
 }
 
 
 // Create a test utility implementation of ContentTreeFuncs
 const TEST_FUNCS: ContentTreeFuncs<TestRange> = {
   content_len_cur(val: TestRange): number {
-    return val.exists && val.is_activated ? val.len : 0;
+    return val.is_activated ? val.len : 0
   },
   content_len_end(val: TestRange): number {
-    return val.exists ? val.len : 0;
+    return val.len
   },
   takes_up_space_cur(val: TestRange): boolean {
-    return val.exists && val.is_activated;
+    return val.is_activated;
   },
   takes_up_space_end(val: TestRange): boolean {
-    return val.exists;
+    return true
   },
   raw_len(val: TestRange): number {
     return val.len;
   },
-  exists(val: TestRange): boolean {
-    return val.exists;
-  },
-  none(): TestRange {
-    return {
-      id: Number.MAX_SAFE_INTEGER,
-      len: Number.MAX_SAFE_INTEGER,
-      is_activated: false,
-      exists: false
-    };
-  },
 
   truncate(val: TestRange, at: number): TestRange {
-    assert(val.exists)
     assert(at > 0 && at < val.len)
 
     const remainder: TestRange = {
       id: val.id + at,
       len: val.len - at,
       is_activated: val.is_activated,
-      exists: val.exists
     }
 
     val.len = at
@@ -70,8 +56,6 @@ const TEST_FUNCS: ContentTreeFuncs<TestRange> = {
   },
 
   tryAppend(a: TestRange, b: TestRange): boolean {
-    assert(a.exists && b.exists)
-
     if (a.id + a.len !== b.id) return false;
     if (a.is_activated !== b.is_activated) return false;
 
@@ -80,8 +64,6 @@ const TEST_FUNCS: ContentTreeFuncs<TestRange> = {
   },
 
   find(val: TestRange, lv: LV): number {
-    if (!val.exists) return -1;
-
     if (lv >= val.id && lv < val.id + val.len) {
       return lv - val.id;
     }
@@ -102,7 +84,6 @@ function testSimpleInserts() {
     id: 123,
     len: 10,
     is_activated: false,
-    exists: true
   }, cursor, true);
 
   cursor.offset = 2;
@@ -110,7 +91,6 @@ function testSimpleInserts() {
     id: 321,
     len: 20,
     is_activated: true,
-    exists: true
   }, cursor, true);
 
   // console.log('cursor', cursor)
@@ -135,7 +115,6 @@ function testReplaceItem() {
     id: 123,
     len: 10,
     is_activated: true,
-    exists: true
   }, cursor, false);
 
   ct_emplace_cursor(tree, 10, 10, cursor);
@@ -158,9 +137,9 @@ function testReplaceItem() {
   // Verify the tree contents
   const items = [...ct_iter(tree)]
   const expected = [
-    { id: 123, len: 2, is_activated: true, exists: true },
-    { id: 125, len: 5, is_activated: false, exists: true },
-    { id: 130, len: 3, is_activated: true, exists: true }
+    { id: 123, len: 2, is_activated: true },
+    { id: 125, len: 5, is_activated: false },
+    { id: 130, len: 3, is_activated: true }
   ];
 
   assert.deepEqual(items, expected)
@@ -190,7 +169,6 @@ class RefContentTree<V> {
    * Insert an item at the specified content position
    */
   insertContentPos(dest_pos: number, val: V) {
-    assert(this.funcs.exists(val))
     assert(this.funcs.raw_len(val) >= 1)
 
     let i = this.idxAfterContentPos(dest_pos);
@@ -277,7 +255,6 @@ function fuzz(seed: number, verbose: boolean = false) {
       id: randInt(10),
       len: 1 + randInt(10),
       is_activated: randBool(0.5),
-      exists: true
     };
   }
 
@@ -290,9 +267,9 @@ function fuzz(seed: number, verbose: boolean = false) {
     // }
     if (verbose) console.log(`Iteration: ${i}`)
 
-    if (i == 4) {
-      debugger
-    }
+    // if (i == 4) {
+    //   debugger
+    // }
 
     // With 60% probability, insert a new item
     if (ct_total_cur_len(tree) === 0 || randBool(0.6)) {

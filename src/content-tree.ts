@@ -1,9 +1,6 @@
 import { assert, assertEq, assertNe } from './utils.js'
 import {
-  NODE_CHILDREN,
-  LEAF_CHILDREN,
-  NODE_SPLIT_POINT,
-  LEAF_SPLIT_POINT,
+  TC,
   LV,
   LeafIdx,
   NodeIdx,
@@ -108,12 +105,12 @@ export class ContentTree<V> {
 }
 
 interface ContentTreeInner<V> {
-  leaf_values: (V | null)[] // num leaves * LEAF_CHILDREN.
+  leaf_values: (V | null)[] // num leaves * TC.LEAF_CHILDREN.
   leaf_next: LeafIdx[] // num leaves
   leaf_parents: NodeIdx[] // num leaves
 
-  node_child_indexes: number[], // num nodes * NODE_CHILDREN. Filled with NULL_IDX for unused child slots.
-  node_child_width: number[], // num nodes * NODE_CHILDREN * 2. [cur, end].
+  node_child_indexes: number[], // num nodes * TC.NODE_CHILDREN. Filled with NULL_IDX for unused child slots.
+  node_child_width: number[], // num nodes * TC.NODE_CHILDREN * 2. [cur, end].
   node_parents: NodeIdx[] // num nodes
 
   /// The number of internal nodes between the root and the leaves. This is initialized to 0,
@@ -196,9 +193,9 @@ export function cloneCursor(cursor: ContentCursor): ContentCursor {
 function pushLeaf<V>(tree: ContentTreeInner<V>): LeafIdx {
   const newIdx = tree.leaf_next.length
 
-  const base = newIdx * LEAF_CHILDREN
-  tree.leaf_values.length = base + LEAF_CHILDREN
-  tree.leaf_values.fill(null, base, base + LEAF_CHILDREN)
+  const base = newIdx * TC.LEAF_CHILDREN
+  tree.leaf_values.length = base + TC.LEAF_CHILDREN
+  tree.leaf_values.fill(null, base, base + TC.LEAF_CHILDREN)
 
   tree.leaf_next.push(NULL_IDX)
   tree.leaf_parents.push(NULL_IDX)
@@ -209,11 +206,11 @@ function pushLeaf<V>(tree: ContentTreeInner<V>): LeafIdx {
 function pushNode<V>(tree: ContentTreeInner<V>): NodeIdx {
   let newIdx = tree.node_parents.length
 
-  tree.node_child_indexes.length = (newIdx + 1) * NODE_CHILDREN
-  tree.node_child_indexes.fill(NULL_IDX, newIdx * NODE_CHILDREN, tree.node_child_indexes.length)
+  tree.node_child_indexes.length = (newIdx + 1) * TC.NODE_CHILDREN
+  tree.node_child_indexes.fill(NULL_IDX, newIdx * TC.NODE_CHILDREN, tree.node_child_indexes.length)
 
-  tree.node_child_width.length = (newIdx + 1) * NODE_CHILDREN * 2
-  tree.node_child_width.fill(0, newIdx * NODE_CHILDREN * 2, tree.node_child_width.length)
+  tree.node_child_width.length = (newIdx + 1) * TC.NODE_CHILDREN * 2
+  tree.node_child_width.fill(0, newIdx * TC.NODE_CHILDREN * 2, tree.node_child_width.length)
 
   tree.node_parents.push(NULL_IDX)
   return newIdx
@@ -221,7 +218,7 @@ function pushNode<V>(tree: ContentTreeInner<V>): NodeIdx {
 
 function leaf_has_space<V>(tree: ContentTreeInner<V>, leaf_idx: LeafIdx, space_wanted: number): boolean {
   if (space_wanted === 0) return true // Is this necessary?
-  return tree.leaf_values[(leaf_idx + 1) * LEAF_CHILDREN - space_wanted] == null
+  return tree.leaf_values[(leaf_idx + 1) * TC.LEAF_CHILDREN - space_wanted] == null
 }
 
 function leaf_is_last<V>(tree: ContentTreeInner<V>, leaf_idx: LeafIdx): boolean {
@@ -229,14 +226,14 @@ function leaf_is_last<V>(tree: ContentTreeInner<V>, leaf_idx: LeafIdx): boolean 
 }
 
 function node_is_full<V>(tree: ContentTreeInner<V>, node_idx: NodeIdx): boolean {
-  return tree.node_child_indexes[(node_idx + 1) * NODE_CHILDREN - 1] != NULL_IDX
+  return tree.node_child_indexes[(node_idx + 1) * TC.NODE_CHILDREN - 1] != NULL_IDX
 }
 
 // TODO: Consider sharing this method with index-tree.
 function node_idx_of_child<V>(tree: ContentTreeInner<V>, node_idx: NodeIdx, child: number): number {
-  const base = node_idx * NODE_CHILDREN
-  let idx = tree.node_child_indexes.indexOf(child, node_idx * NODE_CHILDREN)
-  assert(idx >= base && idx < base + NODE_CHILDREN)
+  const base = node_idx * TC.NODE_CHILDREN
+  let idx = tree.node_child_indexes.indexOf(child, node_idx * TC.NODE_CHILDREN)
+  assert(idx >= base && idx < base + TC.NODE_CHILDREN)
   return idx - base
 }
 
@@ -251,7 +248,7 @@ function flush_delta<V>(tree: ContentTreeInner<V>) {
   while (idx != NULL_IDX) {
     const pos = node_idx_of_child(tree, idx, child)
 
-    let base = (idx * NODE_CHILDREN + pos) * 2
+    let base = (idx * TC.NODE_CHILDREN + pos) * 2
     tree.node_child_width[base + 0] += tree.upd_cur
     tree.node_child_width[base + 1] += tree.upd_end
 
@@ -292,7 +289,7 @@ function dec_delta_update_by<V>(tree: ContentTreeInner<V>, leaf: LeafIdx, e: V) 
 // *** Cursor functions
 
 const cur_value_offset = (cursor: ContentCursor) => (
-  cursor.leaf_idx * LEAF_CHILDREN + cursor.elem_idx
+  cursor.leaf_idx * TC.LEAF_CHILDREN + cursor.elem_idx
 )
 
 /** Returns true if the cursor lands in an item. Or false if we're at the end of the tree. */
@@ -310,8 +307,8 @@ function nextEntry<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): boolean
   cursor.elem_idx++;
   cursor.offset = 0;
 
-  // if (cursor.elem_idx >= LEAF_CHILDREN || !tree.funcs.exists(tree.leaf_values[cur_value_offset(cursor)])) {
-  if (cursor.elem_idx < LEAF_CHILDREN && tree.leaf_values[cur_value_offset(cursor)] != null) {
+  // if (cursor.elem_idx >= TC.LEAF_CHILDREN || !tree.funcs.exists(tree.leaf_values[cur_value_offset(cursor)])) {
+  if (cursor.elem_idx < TC.LEAF_CHILDREN && tree.leaf_values[cur_value_offset(cursor)] != null) {
     // We're still inside one of the leaf's children.
     return true
   }
@@ -355,7 +352,7 @@ function assert_cursor_at<V>(tree: ContentTreeInner<V>, cursor: ContentCursor, e
     if (tree.funcs.takes_up_space_cur(e)) { cur += cursor.offset }
     if (tree.funcs.takes_up_space_end(e)) { end += cursor.offset }
 
-    for (let i = cursor.leaf_idx * LEAF_CHILDREN; i < idx_off; i++) {
+    for (let i = cursor.leaf_idx * TC.LEAF_CHILDREN; i < idx_off; i++) {
       e = tree.leaf_values[i]
       assert(e != null)
       cur += tree.funcs.content_len_cur(e)
@@ -367,8 +364,8 @@ function assert_cursor_at<V>(tree: ContentTreeInner<V>, cursor: ContentCursor, e
     let last_child = cursor.leaf_idx
 
     while (p !== NULL_IDX) {
-      let base = p * NODE_CHILDREN
-      for (let i = 0; i < NODE_CHILDREN; i++) {
+      let base = p * TC.NODE_CHILDREN
+      for (let i = 0; i < TC.NODE_CHILDREN; i++) {
         let c = tree.node_child_indexes[base + i]
         if (c == last_child) break
         cur += tree.node_child_width[(base + i) * 2]
@@ -504,11 +501,11 @@ function create_new_root_node<V>(tree: ContentTreeInner<V>, child_a: number, chi
 
   const new_root_idx = pushNode(tree)
 
-  let b = new_root_idx * NODE_CHILDREN
+  let b = new_root_idx * TC.NODE_CHILDREN
   tree.node_child_indexes[b + 0] = child_a
   tree.node_child_indexes[b + 1] = child_b
 
-  b = new_root_idx * NODE_CHILDREN * 2
+  b = new_root_idx * TC.NODE_CHILDREN * 2
 
   // new_root.child_width[0] = self.total_len - b_size;
   tree.node_child_width[b + 0] = tree._cur_len - b_cur
@@ -532,8 +529,8 @@ export function ct_total_end_len(tree: ContentTreeInner<any>): number {
 
 // Split a full internal node into 2 nodes.
 function split_node<V>(tree: ContentTreeInner<V>, old_idx: NodeIdx, children_are_leaves: boolean): NodeIdx {
-  const old_node_base = old_idx * NODE_CHILDREN
-  const old_node_width_base = old_idx * NODE_CHILDREN * 2
+  const old_node_base = old_idx * TC.NODE_CHILDREN
+  const old_node_width_base = old_idx * TC.NODE_CHILDREN * 2
 
   // The old leaf must be full before we split it.
   if (DEBUG) {
@@ -543,30 +540,30 @@ function split_node<V>(tree: ContentTreeInner<V>, old_idx: NodeIdx, children_are
   // Calculate the split size - sum of widths from SPLIT_POINT to end
   let split_cur = 0
   let split_end = 0
-  for (let i = NODE_SPLIT_POINT; i < NODE_CHILDREN; i++) {
+  for (let i = TC.NODE_SPLIT_POINT; i < TC.NODE_CHILDREN; i++) {
     split_cur += tree.node_child_width[old_node_width_base + i * 2 + 0]
     split_end += tree.node_child_width[old_node_width_base + i * 2 + 1]
   }
 
   const new_node_idx = pushNode(tree)
 
-  const new_node_base = new_node_idx * NODE_CHILDREN
-  const new_node_width_base = new_node_idx * NODE_CHILDREN * 2
+  const new_node_base = new_node_idx * TC.NODE_CHILDREN
+  const new_node_width_base = new_node_idx * TC.NODE_CHILDREN * 2
 
   // Copy children from the old node's second half to the new node's first half
-  tree.node_child_indexes.copyWithin(new_node_base, old_node_base + NODE_SPLIT_POINT, old_node_base + NODE_CHILDREN)
-  tree.node_child_width.copyWithin(new_node_width_base, old_node_width_base + NODE_SPLIT_POINT * 2, old_node_width_base + NODE_CHILDREN * 2)
-  tree.node_child_indexes.fill(NULL_IDX, old_node_base + NODE_SPLIT_POINT, old_node_base + NODE_CHILDREN)
+  tree.node_child_indexes.copyWithin(new_node_base, old_node_base + TC.NODE_SPLIT_POINT, old_node_base + TC.NODE_CHILDREN)
+  tree.node_child_width.copyWithin(new_node_width_base, old_node_width_base + TC.NODE_SPLIT_POINT * 2, old_node_width_base + TC.NODE_CHILDREN * 2)
+  tree.node_child_indexes.fill(NULL_IDX, old_node_base + TC.NODE_SPLIT_POINT, old_node_base + TC.NODE_CHILDREN)
 
   // Update the parent pointers for all children of the new node
   if (children_are_leaves) {
-    for (let i = 0; i < NODE_SPLIT_POINT; i++) {
+    for (let i = 0; i < TC.NODE_SPLIT_POINT; i++) {
       const child_idx = tree.node_child_indexes[new_node_base + i]
       assert(child_idx < tree.leaf_parents.length)
       tree.leaf_parents[child_idx] = new_node_idx
     }
   } else {
-    for (let i = 0; i < NODE_SPLIT_POINT; i++) {
+    for (let i = 0; i < TC.NODE_SPLIT_POINT; i++) {
       const child_idx = tree.node_child_indexes[new_node_base + i]
       assert(child_idx < tree.node_parents.length)
       tree.node_parents[child_idx] = new_node_idx
@@ -610,28 +607,28 @@ function split_child_of_node<V>(
     // This node is full, we need to split it first
     const new_node = split_node(tree, node_idx, children_are_leaves)
 
-    if (child_pos >= NODE_SPLIT_POINT) {
+    if (child_pos >= TC.NODE_SPLIT_POINT) {
       // We're inserting into the new node
-      child_pos -= NODE_SPLIT_POINT
+      child_pos -= TC.NODE_SPLIT_POINT
       node_idx = new_node
     }
   }
 
   // Update the width of the existing child
-  let child_width_base = (node_idx * NODE_CHILDREN + child_pos) * 2
+  let child_width_base = (node_idx * TC.NODE_CHILDREN + child_pos) * 2
   tree.node_child_width[child_width_base + 0] -= stolen_cur
   tree.node_child_width[child_width_base + 1] -= stolen_end
 
   // Insert the new child after the existing one
   const insert_pos = child_pos + 1
 
-  let node_base = node_idx * NODE_CHILDREN
+  let node_base = node_idx * TC.NODE_CHILDREN
 
   // Index.
   tree.node_child_indexes.copyWithin(
     node_base + insert_pos + 1,
     node_base + insert_pos,
-    node_base + NODE_CHILDREN - 1
+    node_base + TC.NODE_CHILDREN - 1
   )
   tree.node_child_indexes[node_base + insert_pos] = new_child_idx
 
@@ -640,7 +637,7 @@ function split_child_of_node<V>(
   tree.node_child_width.copyWithin(
     width_base + (insert_pos + 1) * 2,
     width_base + insert_pos * 2,
-    width_base + (NODE_CHILDREN - 1) * 2
+    width_base + (TC.NODE_CHILDREN - 1) * 2
   )
   tree.node_child_width[width_base + insert_pos * 2 + 0] = stolen_cur
   tree.node_child_width[width_base + insert_pos * 2 + 1] = stolen_end
@@ -664,9 +661,9 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   // Calculate the size of the elements we're moving to the new leaf
   let new_cur = 0
   let new_end = 0
-  const old_leaf_base = old_idx * LEAF_CHILDREN
+  const old_leaf_base = old_idx * TC.LEAF_CHILDREN
 
-  for (let i = LEAF_SPLIT_POINT; i < LEAF_CHILDREN; i++) {
+  for (let i = TC.LEAF_SPLIT_POINT; i < TC.LEAF_CHILDREN; i++) {
     const val = tree.leaf_values[old_leaf_base + i]
     if (val != null) {
       tree.notify(val, new_leaf_idx)
@@ -693,7 +690,7 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   // Create the new leaf
   // const new_leaf_idx_actual = pushLeaf(tree)
   // assert(new_leaf_idx === new_leaf_idx_actual)
-  const new_leaf_base = new_leaf_idx * LEAF_CHILDREN
+  const new_leaf_base = new_leaf_idx * TC.LEAF_CHILDREN
 
   // Set up the new leaf's properties
   tree.leaf_next[new_leaf_idx] = tree.leaf_next[old_idx]
@@ -701,10 +698,10 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
 
   // We'll steal the second half of the items in old_leaf.
   // Copy elements from old leaf to new leaf
-  tree.leaf_values.copyWithin(new_leaf_base, old_leaf_base + LEAF_SPLIT_POINT, old_leaf_base + LEAF_CHILDREN)
+  tree.leaf_values.copyWithin(new_leaf_base, old_leaf_base + TC.LEAF_SPLIT_POINT, old_leaf_base + TC.LEAF_CHILDREN)
 
   // Clear the second half of the old leaf
-  tree.leaf_values.fill(null, old_leaf_base + LEAF_SPLIT_POINT, old_leaf_base + LEAF_CHILDREN)
+  tree.leaf_values.fill(null, old_leaf_base + TC.LEAF_SPLIT_POINT, old_leaf_base + TC.LEAF_CHILDREN)
 
   // Update the old leaf's next pointer
   tree.leaf_next[old_idx] = new_leaf_idx
@@ -722,36 +719,36 @@ function make_space_in_leaf_for<V>(
 
   if (leaf_has_space(tree, leaf_idx, space_wanted)) {
     // There's enough space in the current leaf, so shift elements to make room
-    const leaf_base = leaf_idx * LEAF_CHILDREN
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
     tree.leaf_values.copyWithin(
       leaf_base + elem_idx + space_wanted,
       leaf_base + elem_idx,
-      leaf_base + LEAF_CHILDREN - space_wanted
+      leaf_base + TC.LEAF_CHILDREN - space_wanted
     )
-    // for (let i = LEAF_CHILDREN - space_wanted - 1; i >= elem_idx; i--) {
+    // for (let i = TC.LEAF_CHILDREN - space_wanted - 1; i >= elem_idx; i--) {
     //   tree.leaf_values[leaf_base + i + space_wanted] = tree.leaf_values[leaf_base + i]
     // }
   } else {
     // Not enough space, need to split the leaf
     if (tree.upd_leaf === leaf_idx) flush_delta(tree) // Easier than updating cursor correctly.
 
-    const new_node = split_leaf(tree, leaf_idx)
+    const new_leaf_idx = split_leaf(tree, leaf_idx)
 
-    if (elem_idx >= LEAF_SPLIT_POINT) {
+    if (elem_idx >= TC.LEAF_SPLIT_POINT) {
       // We're inserting into the newly created node
-      leaf_idx = new_node
-      elem_idx -= LEAF_SPLIT_POINT
+      leaf_idx = new_leaf_idx
+      elem_idx -= TC.LEAF_SPLIT_POINT
     }
 
     // Now shift elements in the target leaf
-    const leaf_base = leaf_idx * LEAF_CHILDREN
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
     tree.leaf_values.copyWithin(
       leaf_base + elem_idx + space_wanted,
       leaf_base + elem_idx,
-      leaf_base + LEAF_SPLIT_POINT // We know there are exactly LEAF_SPLIT_POINT items in the leaf.
+      leaf_base + TC.LEAF_SPLIT_POINT // We know there are exactly TC.LEAF_SPLIT_POINT items in the leaf.
     )
 
-    // for (let i = (leaf_idx === new_node ? LEAF_SPLIT_POINT : LEAF_CHILDREN) - space_wanted - 1; i >= elem_idx; i--) {
+    // for (let i = (leaf_idx === new_node ? TC.LEAF_SPLIT_POINT : TC.LEAF_CHILDREN) - space_wanted - 1; i >= elem_idx; i--) {
     //   tree.leaf_values[new_leaf_base + i + space_wanted] = tree.leaf_values[new_leaf_base + i]
     // }
 
@@ -784,7 +781,7 @@ function splice_in_internal<V>(
   // delta.upd_cur += tree.funcs.content_len_cur(item)
   // delta.upd_end += tree.funcs.content_len_end(item)
 
-  const new_leaf_base = leaf_idx * LEAF_CHILDREN
+  const new_leaf_base = leaf_idx * TC.LEAF_CHILDREN
   tree.leaf_values[new_leaf_base + new_elem_idx] = item
 
   if (remainder !== null) {
@@ -809,7 +806,7 @@ export function ct_insert<V>(
   let leaf_idx = cursor.leaf_idx
   let elem_idx = cursor.elem_idx
   let offset = cursor.offset
-  const leaf_base = leaf_idx * LEAF_CHILDREN
+  const leaf_base = leaf_idx * TC.LEAF_CHILDREN
 
   let remainder: V | null = null
   if (offset === 0 && elem_idx > 0) {
@@ -869,7 +866,7 @@ export function ct_insert<V>(
     // Try and prepend to the start of the next item
     const next_entry_idx = leaf_base + elem_idx
     if (remainder === null
-      && elem_idx < LEAF_CHILDREN
+      && elem_idx < TC.LEAF_CHILDREN
       && tree.leaf_values[next_entry_idx] != null)
     {
       const cur_entry = tree.leaf_values[next_entry_idx]
@@ -921,7 +918,7 @@ export function ct_mutate_entry<V, R>(
   }
 
   const leaf = cursor.leaf_idx
-  const leaf_base = leaf * LEAF_CHILDREN
+  const leaf_base = leaf * TC.LEAF_CHILDREN
   const entry = tree.leaf_values[leaf_base + cursor.elem_idx]
   assert(entry != null)
   const entry_len = tree.funcs.raw_len(entry)
@@ -939,7 +936,7 @@ export function ct_mutate_entry<V, R>(
     const scan_start = cursor.elem_idx + 1
     let elem_idx2 = scan_start
 
-    while (elem_idx2 < LEAF_CHILDREN) {
+    while (elem_idx2 < TC.LEAF_CHILDREN) {
       const next_entry = tree.leaf_values[leaf_base + elem_idx2]
       if (next_entry == null || !tree.funcs.tryAppend(modified_entry, next_entry)) break
 
@@ -953,11 +950,11 @@ export function ct_mutate_entry<V, R>(
         .copyWithin(
           leaf_base + scan_start,
           leaf_base + elem_idx2,
-          leaf_base + LEAF_CHILDREN
+          leaf_base + TC.LEAF_CHILDREN
         )
         .fill(null,
-          leaf_base + LEAF_CHILDREN - (elem_idx2 - scan_start),
-          leaf_base + LEAF_CHILDREN
+          leaf_base + TC.LEAF_CHILDREN - (elem_idx2 - scan_start),
+          leaf_base + TC.LEAF_CHILDREN
         )
     }
 
@@ -1053,9 +1050,9 @@ function cursor_at_start_nothing_emplaced<V>(tree: ContentTreeInner<V>): Content
 function find_cur_pos_in_node(tree: ContentTreeInner<any>, idx: NodeIdx, at_cur_pos: number): [number, number, number] {
   let end_pos_offset = 0
 
-  let base = idx * NODE_CHILDREN
-  let width_base = idx * NODE_CHILDREN * 2
-  for (let i = 0; i < NODE_CHILDREN; i++) {
+  let base = idx * TC.NODE_CHILDREN
+  let width_base = idx * TC.NODE_CHILDREN * 2
+  for (let i = 0; i < TC.NODE_CHILDREN; i++) {
     // let width = node.child_width[i];
     let width_cur = tree.node_child_width[width_base + i * 2 + 0]
     let width_end = tree.node_child_width[width_base + i * 2 + 1]
@@ -1075,9 +1072,9 @@ function find_cur_pos_in_node(tree: ContentTreeInner<any>, idx: NodeIdx, at_cur_
 function find_cur_pos_in_leaf(tree: ContentTreeInner<any>, idx: LeafIdx, at_cur_pos: number): [number, number, number] {
   let end_pos = 0;
 
-  let base = idx * LEAF_CHILDREN
+  let base = idx * TC.LEAF_CHILDREN
 
-  for (let i = 0; i < LEAF_CHILDREN; i++) {
+  for (let i = 0; i < TC.LEAF_CHILDREN; i++) {
     let val = tree.leaf_values[base + i]
     let cur = tree.funcs.content_len_cur(val)
     let end = tree.funcs.content_len_end(val)
@@ -1096,7 +1093,7 @@ function find_cur_pos_in_leaf(tree: ContentTreeInner<any>, idx: LeafIdx, at_cur_
 
 // Returns the end length slid past
 function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: ContentCursor): number {
-  let leaf_base = cursor.leaf_idx * LEAF_CHILDREN
+  let leaf_base = cursor.leaf_idx * TC.LEAF_CHILDREN
   const e = tree.leaf_values[leaf_base + cursor.elem_idx];
   if (e == null) return 0
 
@@ -1117,7 +1114,7 @@ function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: Cont
   while (true) {
     // This walks linearly through the nodes. It would be "big-O faster" to walk up and down
     // the tree in this case, but I think this will usually be faster in practice.
-    if (cursor.elem_idx >= LEAF_CHILDREN ||
+    if (cursor.elem_idx >= TC.LEAF_CHILDREN ||
         tree.leaf_values[leaf_base + cursor.elem_idx] == null) {
       // Go to next leaf
       const next_leaf = tree.leaf_next[cursor.leaf_idx]
@@ -1126,7 +1123,7 @@ function slide_cursor_to_next_content<V>(tree: ContentTreeInner<V>, cursor: Cont
 
       // flush_delta_and_clear(tree, cursor.leaf_idx, cursor)
       cursor.leaf_idx = next_leaf
-      leaf_base = cursor.leaf_idx * LEAF_CHILDREN
+      leaf_base = cursor.leaf_idx * TC.LEAF_CHILDREN
       cursor.elem_idx = 0
     }
 
@@ -1180,7 +1177,7 @@ export function ct_cursor_before_cur_pos<V>(tree: ContentTreeInner<V>, content_p
   }
 
   // Now find the position within the leaf
-  const leaf_base = idx * LEAF_CHILDREN
+  const leaf_base = idx * TC.LEAF_CHILDREN
   let [elem_idx, rel_end_pos, offset] = find_cur_pos_in_leaf(tree, idx, content_pos_remaining)
 
   // We're guaranteed that the item under elem_idx has size in CUR. Well, unless the tree is empty.
@@ -1232,8 +1229,8 @@ export function ct_try_find_item_at_cursor<V>(tree: ContentTreeInner<V>, lv: LV)
   if (cursor) {
     tree.cursor = null
 
-    let base = cursor.leaf_idx * LEAF_CHILDREN
-    for (let i = 0; i < LEAF_CHILDREN; i++) {
+    let base = cursor.leaf_idx * TC.LEAF_CHILDREN
+    for (let i = 0; i < TC.LEAF_CHILDREN; i++) {
       let e = tree.leaf_values[base + i]
       if (e == null) break
 
@@ -1257,9 +1254,9 @@ export function ct_try_find_item_at_cursor<V>(tree: ContentTreeInner<V>, lv: LV)
 // be used to mutate the content tree. (This makes a lot more sense in rust - it
 // might be worth revisiting this!)
 export function ct_cursor_before_item<V>(tree: ContentTreeInner<V>, id: LV, leaf_idx: LeafIdx): ContentCursor {
-  const leaf_base = leaf_idx * LEAF_CHILDREN
+  const leaf_base = leaf_idx * TC.LEAF_CHILDREN
 
-  for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
+  for (let elem_idx = 0; elem_idx < TC.LEAF_CHILDREN; elem_idx++) {
     const e = tree.leaf_values[leaf_base + elem_idx]
     if (e == null) break
 
@@ -1323,7 +1320,7 @@ function first_leaf<V>(tree: ContentTreeInner<V>): LeafIdx {
   DEV: {
     let idx = tree.root
     for (let i = 0; i < tree.height; i++) {
-      idx = tree.node_child_indexes[idx * NODE_CHILDREN]
+      idx = tree.node_child_indexes[idx * TC.NODE_CHILDREN]
     }
     assert(idx === 0, "First leaf should be at index 0")
   }
@@ -1352,8 +1349,8 @@ export function ct_print_tree(tree: ContentTreeInner<any>) {
         console.log(`${indStr(indent+1)}UPDATE IS HERE! upd_cur: ${tree.upd_cur} / upd_end: ${tree.upd_end}`)
       }
 
-      const base = idx * LEAF_CHILDREN
-      for (let i = 0; i < LEAF_CHILDREN; i++) {
+      const base = idx * TC.LEAF_CHILDREN
+      for (let i = 0; i < TC.LEAF_CHILDREN; i++) {
         let val = tree.leaf_values[base + i]
         if (val == null) break
         console.log(`${indStr(indent+1)}${i}: ${JSON.stringify(val)}`)
@@ -1362,8 +1359,8 @@ export function ct_print_tree(tree: ContentTreeInner<any>) {
     } else {
       // Internal node
       console.log(`${indStr(indent)}Node ${idx} parent ${tree.node_parents[idx]}`)
-      const base = idx * NODE_CHILDREN
-      for (let i = 0; i < NODE_CHILDREN; i++) {
+      const base = idx * TC.NODE_CHILDREN
+      for (let i = 0; i < TC.NODE_CHILDREN; i++) {
         let child = tree.node_child_indexes[base + i]
         if (child >= 0) {
           const cur = tree.node_child_width[(base + i)*2 + 0]
@@ -1405,8 +1402,8 @@ function debug_check_walk_internal<V>(
     assertEq(idx, expect_next_leaf_idx)
 
     let leaf_size = { cur: 0, end: 0 }
-    for (let i = 0; i < LEAF_CHILDREN; i++) {
-      const e = tree.leaf_values[idx * LEAF_CHILDREN + i]
+    for (let i = 0; i < TC.LEAF_CHILDREN; i++) {
+      const e = tree.leaf_values[idx * TC.LEAF_CHILDREN + i]
       if (e != null) {
         leaf_size.cur += tree.funcs.content_len_cur(e)
         leaf_size.end += tree.funcs.content_len_end(e)
@@ -1426,13 +1423,13 @@ function debug_check_walk_internal<V>(
     let actual_node_size = { cur: 0, end: 0 }
     let delta = null
 
-    for (let i = 0; i < NODE_CHILDREN; i++) {
-      const child_idx = tree.node_child_indexes[idx * NODE_CHILDREN + i]
+    for (let i = 0; i < TC.NODE_CHILDREN; i++) {
+      const child_idx = tree.node_child_indexes[idx * TC.NODE_CHILDREN + i]
       if (child_idx === NULL_IDX) {
         assert(i >= 1, "All nodes must have at least 1 child")
         // All subsequent child_indexes must be NULL_IDX
-        for (let j = i; j < NODE_CHILDREN; j++) {
-          assertEq(tree.node_child_indexes[idx * NODE_CHILDREN + j], NULL_IDX)
+        for (let j = i; j < TC.NODE_CHILDREN; j++) {
+          assertEq(tree.node_child_indexes[idx * TC.NODE_CHILDREN + j], NULL_IDX)
         }
         break
       }
@@ -1447,7 +1444,7 @@ function debug_check_walk_internal<V>(
         delta = d
       }
 
-      const width_base = (idx * NODE_CHILDREN + i) * 2
+      const width_base = (idx * TC.NODE_CHILDREN + i) * 2
       let expect_cur = tree.node_child_width[width_base + 0]
       let expect_end = tree.node_child_width[width_base + 1]
 
@@ -1520,7 +1517,7 @@ export function ct_debug_check<V>(tree: ContentTreeInner<V>): void {
       }
     } else {
       // Only the first leaf can be empty
-      assert(tree.leaf_values[leaf_idx * LEAF_CHILDREN] != null);
+      assert(tree.leaf_values[leaf_idx * TC.LEAF_CHILDREN] != null);
     }
 
     if (tree.leaf_next[leaf_idx] === NULL_IDX) break;
@@ -1545,10 +1542,10 @@ export function* ct_iter<V>(tree: ContentTreeInner<V>): Generator<V> {
   if (ctIsEmpty(tree)) return;
 
   for (let leaf_idx = 0; leaf_idx !== NULL_IDX; leaf_idx = tree.leaf_next[leaf_idx]) {
-    const leaf_base = leaf_idx * LEAF_CHILDREN;
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN;
 
     // Iterate through elements in the current leaf
-    for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
+    for (let elem_idx = 0; elem_idx < TC.LEAF_CHILDREN; elem_idx++) {
       const item = tree.leaf_values[leaf_base + elem_idx];
       if (item == null) break;
 
@@ -1564,9 +1561,9 @@ export function* ct_iter_rle<V>(tree: ContentTreeInner<V>): Generator<V> {
   let last: V | null = null
 
   for (let leaf_idx = 0; leaf_idx !== NULL_IDX; leaf_idx = tree.leaf_next[leaf_idx]) {
-    const leaf_base = leaf_idx * LEAF_CHILDREN;
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN;
 
-    for (let elem_idx = 0; elem_idx < LEAF_CHILDREN; elem_idx++) {
+    for (let elem_idx = 0; elem_idx < TC.LEAF_CHILDREN; elem_idx++) {
       const item = tree.leaf_values[leaf_base + elem_idx];
       if (item == null) break;
 
@@ -1585,10 +1582,10 @@ export function* ct_iter_rle<V>(tree: ContentTreeInner<V>): Generator<V> {
 export function* ct_iter_leaves<V>(tree: ContentTreeInner<V>) {
 
   for (let leaf_idx = 0; leaf_idx !== NULL_IDX; leaf_idx = tree.leaf_next[leaf_idx]) {
-    const leaf_base = leaf_idx * LEAF_CHILDREN;
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN;
 
     yield {
-      values: tree.leaf_values.slice(leaf_base, leaf_base + LEAF_CHILDREN),
+      values: tree.leaf_values.slice(leaf_base, leaf_base + TC.LEAF_CHILDREN),
       next: tree.leaf_next[leaf_idx],
       parent: tree.leaf_parents[leaf_idx],
     }

@@ -105,7 +105,7 @@ export class CausalGraph {
 
 
 
-type CGEntry = {
+export type CGEntry = {
   version: LV,
   vEnd: LV, // > version.
 
@@ -748,11 +748,25 @@ const pushReversedRLE = (list: LVRange[], start: LV, end: LV) => {
 // Numerical values used by utility methods below.
 export const enum DiffFlag { A=0, B=1, Shared=2 }
 
+export function diff(cg: CausalGraphInner, a: LV[], b: LV[]): DiffResult {
+  const aOnly: LVRange[] = [], bOnly: LVRange[] = []
+
+  diff2(cg, a, b, (start, end, inB) => {
+    const target = inB ? bOnly : aOnly
+    pushReversedRLE(target, start, end)
+  })
+
+  aOnly.reverse()
+  bOnly.reverse()
+  return {aOnly, bOnly}
+}
+
+// export type RangeHander = (start: number, end: number) => void
 /**
  * This method takes in two versions (expressed as frontiers) and returns the
  * set of operations only appearing in the history of one version or the other.
  */
-export const diff = (cg: CausalGraphInner, a: LV[], b: LV[]): DiffResult => {
+export function diff2(cg: CausalGraphInner, a: LV[], b: LV[], visitor: (start: number, end: number, inB: boolean) => void) {
   const flags = new Map<number, DiffFlag>()
 
   // Every order is in here at most once. Every entry in the queue is also in
@@ -784,15 +798,15 @@ export const diff = (cg: CausalGraphInner, a: LV[], b: LV[]): DiffResult => {
 
   // console.log('QF', queue, flags)
 
-  const aOnly: LVRange[] = [], bOnly: LVRange[] = []
-
   const markRun = (start: LV, endInclusive: LV, flag: DiffFlag) => {
     if (endInclusive < start) throw Error('end < start')
 
     // console.log('markrun', start, end, flag)
     if (flag == DiffFlag.Shared) return
-    const target = flag === DiffFlag.A ? aOnly : bOnly
-    pushReversedRLE(target, start, endInclusive + 1)
+
+    // const target = flag === DiffFlag.A ? aOnly : bOnly
+    // target(start, endInclusive + 1)
+    visitor(start, endInclusive + 1, flag === DiffFlag.B)
   }
 
   // Loop until everything is shared.
@@ -830,10 +844,6 @@ export const diff = (cg: CausalGraphInner, a: LV[], b: LV[]): DiffResult => {
 
     for (const p of e.parents) enq(p, flag)
   }
-
-  aOnly.reverse()
-  bOnly.reverse()
-  return {aOnly, bOnly}
 }
 
 

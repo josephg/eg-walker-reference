@@ -15,7 +15,7 @@
 //
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
-import { CausalGraph, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
+import { CausalGraph, diff2, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
 import { cloneCursor, ContentCursor, ContentTree, ct_iter, ct_iter_rle, ctCreate } from './content-tree.js'
 import { CRDTItem, createPlaceholderItem, ITEM_FUNCS, itemLen, ItemState, itemTakesUpCurSpace, itemTakesUpEndSpace } from './crdtitem.js'
 import { IndexTree, itCountItems, MAX_BOUND } from './index-tree.js'
@@ -751,31 +751,13 @@ export function traverseAndApply<T>(
   // topologically sorted order.
 
   for (const entry of oplog.cg.iterVersionsBetween(fromOp, toOp)) {
-    const {aOnly, bOnly} = oplog.cg.diff(ctx.curVersion, entry.parents)
-
-    // The causal graph library run-length encodes everything.
-    // These are all ranges of operations.
-    const retreat = aOnly
-    const advance = bOnly
-
-    // Operations to apply.
-    const consumeStart = entry.version
-    const consumeEnd = entry.vEnd
-
-    // console.log('retreat', retreat, 'advance', advance, 'consume', [consumeStart, consumeEnd])
-
-    // Retreat.
-    for (const [start, end] of retreat) {
-      advRetreatRange(ctx, start, end, false)
-    }
-
-    // Advance.
-    for (const [start, end] of advance) {
-      advRetreatRange(ctx, start, end, true)
-    }
+    diff2(oplog.cg.inner, ctx.curVersion, entry.parents, (start, end, inB) => {
+      // The one downside of this approach is we don't run length the ranges.
+      advRetreatRange(ctx, start, end, inB)
+    })
 
     // Then apply the operation.
-    applyRange(ctx, snapshot, oplog, consumeStart, consumeEnd)
+    applyRange(ctx, snapshot, oplog, entry.version, entry.vEnd)
 
     // After processing these operations, we're at the last version in the range.
     ctx.curVersion.length = 1

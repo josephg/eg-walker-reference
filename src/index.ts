@@ -16,9 +16,9 @@
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
 import { CausalGraph, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
-import { cloneCursor, ContentCursor, ContentTree, ctCreate } from './content-tree.js'
+import { cloneCursor, ContentCursor, ContentTree, ct_iter, ct_iter_rle, ctCreate } from './content-tree.js'
 import { CRDTItem, createPlaceholderItem, ITEM_FUNCS, itemLen, ItemState, itemTakesUpCurSpace, itemTakesUpEndSpace } from './crdtitem.js'
-import { IndexTree, MAX_BOUND } from './index-tree.js'
+import { IndexTree, itCountItems, MAX_BOUND } from './index-tree.js'
 import { Marker, MARKER_FUNCS } from './marker.js'
 import { LeafIdx } from './tree-common.js'
 import {assert, assertEq, assertNe, max2, min2, pushRLEList} from './utils.js'
@@ -792,11 +792,13 @@ export function createEmptyBranch(): Branch<any> {
   return { snapshot: [], version: [] }
 }
 
+;(globalThis as any).notifyCount = 0
 function createEditContext(curVersion: LV[] = []): EditContext {
   const index = new IndexTree(MARKER_FUNCS)
   const items = new ContentTree(ITEM_FUNCS, (e, leaf) => {
     // console.log('notify', e, leaf)
     index.setRange(e.lvStart, e.lvEnd, {type: 'ins', leaf})
+    ;(globalThis as any).notifyCount++
   })
 
   // The items list is initialized with a single placeholder item.
@@ -816,6 +818,27 @@ export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
     snapshot,
     version: oplog.cg.heads().slice()
   }
+}
+
+export function checkoutSimulated(oplog: ListOpLog<any>): LV[] {
+  let ctx = createEditContext()
+  traverseAndApply(ctx, oplog, null)
+
+  // let num = 0
+  // for (const x of ct_iter(ctx.items.inner)) {
+  //   num += 1
+  // }
+  // console.log('num raw', num)
+
+  // num = 0
+  // for (const x of ct_iter_rle(ctx.items.inner)) {
+  //   num += 1
+  // }
+  // console.log('num RLE', num)
+
+  // console.log('it items', itCountItems(ctx.index.inner))
+
+  return oplog.cg.heads().slice()
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {

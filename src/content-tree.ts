@@ -709,51 +709,13 @@ function split_leaf<V>(tree: ContentTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   return new_leaf_idx
 }
 
-function make_space_in_leaf_for<V>(
-  tree: ContentTreeInner<V>,
-  space_wanted: number,
-  leaf_idx: LeafIdx,
-  elem_idx: number
-): [LeafIdx, number] {
-  assert(space_wanted === 1 || space_wanted === 2)
-
-  if (leaf_has_space(tree, leaf_idx, space_wanted)) {
-    // There's enough space in the current leaf, so shift elements to make room
-    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
-    tree.leaf_values.copyWithin(
-      leaf_base + elem_idx + space_wanted,
-      leaf_base + elem_idx,
-      leaf_base + TC.LEAF_CHILDREN - space_wanted
-    )
-    // for (let i = TC.LEAF_CHILDREN - space_wanted - 1; i >= elem_idx; i--) {
-    //   tree.leaf_values[leaf_base + i + space_wanted] = tree.leaf_values[leaf_base + i]
-    // }
-  } else {
-    // Not enough space, need to split the leaf
-    if (tree.upd_leaf === leaf_idx) flush_delta(tree) // Easier than updating cursor correctly.
-
-    const new_leaf_idx = split_leaf(tree, leaf_idx)
-
-    if (elem_idx >= TC.LEAF_SPLIT_POINT) {
-      // We're inserting into the newly created node
-      leaf_idx = new_leaf_idx
-      elem_idx -= TC.LEAF_SPLIT_POINT
-    }
-
-    // Now shift elements in the target leaf
-    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
-    tree.leaf_values.copyWithin(
-      leaf_base + elem_idx + space_wanted,
-      leaf_base + elem_idx,
-      leaf_base + TC.LEAF_SPLIT_POINT // We know there are exactly TC.LEAF_SPLIT_POINT items in the leaf.
-    )
-
-    // for (let i = (leaf_idx === new_node ? TC.LEAF_SPLIT_POINT : TC.LEAF_CHILDREN) - space_wanted - 1; i >= elem_idx; i--) {
-    //   tree.leaf_values[new_leaf_base + i + space_wanted] = tree.leaf_values[new_leaf_base + i]
-    // }
-
+function copyWithinBack<T>(arr: T[], target: number, start: number, end: number) {
+  // I could call arr.copyWithin(target, start, end) but this is much faster; especially on V8.
+  if (DEBUG) assert(target >= start, `target ${target} start ${start} end ${end}`)
+  const count = end - start
+  for (let i = count - 1; i >= 0; i--) {
+    arr[target + i] = arr[start + i];
   }
-  return [leaf_idx, elem_idx]
 }
 
 // Splice in an item, and optionally remainder afterwards. Returns the (leaf_idx, elem_idx) of
@@ -767,30 +729,54 @@ function splice_in_internal<V>(
   notify_here: boolean
 ): [LeafIdx, number] {
   const space_needed = 1 + (remainder !== null ? 1 : 0)
-  const [new_leaf_idx, new_elem_idx] = make_space_in_leaf_for(tree, space_needed, leaf_idx, elem_idx)
 
-  // Only call notify if we're either notifying in all cases, or if the item is inserted
-  // into a different leaf than we were passed.
-  const moved = new_leaf_idx !== leaf_idx
+  let moved = false
+  if (leaf_has_space(tree, leaf_idx, space_needed)) {
+    // There's enough space in the current leaf, so shift elements to make room
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
+    copyWithinBack(
+      tree.leaf_values,
+      leaf_base + elem_idx + space_needed,
+      leaf_base + elem_idx,
+      leaf_base + TC.LEAF_CHILDREN - space_needed
+    )
+  } else {
+    // We need to split the leaf.
+    if (tree.upd_leaf === leaf_idx) flush_delta(tree)
+    const new_leaf_idx = split_leaf(tree, leaf_idx)
+
+    if (elem_idx >= TC.LEAF_SPLIT_POINT) {
+      // We're inserting into the newly created node
+      leaf_idx = new_leaf_idx
+      elem_idx -= TC.LEAF_SPLIT_POINT
+      moved = true
+    }
+    const leaf_base = leaf_idx * TC.LEAF_CHILDREN
+    tree.leaf_values.copyWithin(
+      leaf_base + elem_idx + space_needed,
+      leaf_base + elem_idx,
+      leaf_base + TC.LEAF_SPLIT_POINT // We know there are exactly TC.LEAF_SPLIT_POINT items in the leaf.
+    )
+  }
+
   if (notify_here || moved) {
-    leaf_idx = new_leaf_idx
+    // Only call notify if we're either notifying in all cases, or if the item is inserted
+    // into a different leaf than we were passed.
     tree.notify(item, leaf_idx)
   }
 
   inc_delta_update_by(tree, leaf_idx, item)
-  // delta.upd_cur += tree.funcs.content_len_cur(item)
-  // delta.upd_end += tree.funcs.content_len_end(item)
 
   const new_leaf_base = leaf_idx * TC.LEAF_CHILDREN
-  tree.leaf_values[new_leaf_base + new_elem_idx] = item
+  tree.leaf_values[new_leaf_base + elem_idx] = item
 
   if (remainder !== null) {
     if (moved) tree.notify(remainder, leaf_idx)
     inc_delta_update_by(tree, leaf_idx, remainder)
-    tree.leaf_values[new_leaf_base + new_elem_idx + 1] = remainder
+    tree.leaf_values[new_leaf_base + elem_idx + 1] = remainder
   }
 
-  return [leaf_idx, new_elem_idx]
+  return [leaf_idx, elem_idx]
 }
 
 export function ct_insert<V>(

@@ -457,11 +457,12 @@ function split_leaf<V>(tree: IndexTreeInner<V>, old_idx: LeafIdx): LeafIdx {
   return new_leaf_idx
 }
 
-
+;(globalThis as any).x = 0
 function make_space_in_leaf_for<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_idx: number, space_wanted: number): [LeafIdx, number] {
   assert(space_wanted === 1 || space_wanted === 2)
 
   if (!leaf_has_space(tree.leaves, leaf_idx, space_wanted)) {
+    ;(globalThis as any).x++
     let new_leaf_idx = split_leaf(tree, leaf_idx)
     if (elem_idx >= TC.LEAF_SPLIT_POINT) {
       // Inserting into the newly created leaf.
@@ -470,9 +471,20 @@ function make_space_in_leaf_for<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, e
     }
   }
 
+  // This code is equivalent to the calls to copyWithin (below). But its significantly faster
+  // - especially in V8.
   let base = leaf_idx * TC.LEAF_CHILDREN
-  tree.leaves.bounds.copyWithin(base + elem_idx + space_wanted, base + elem_idx, base + TC.LEAF_CHILDREN - space_wanted)
-  tree.leaves.values.copyWithin(base + elem_idx + space_wanted, base + elem_idx, base + TC.LEAF_CHILDREN - space_wanted)
+
+  const count = TC.LEAF_CHILDREN - space_wanted - elem_idx
+  const target = base + elem_idx + space_wanted
+  const start = base + elem_idx
+  for (let i = count - 1; i >= 0; i--) {
+    tree.leaves.bounds[target + i] = tree.leaves.bounds[start + i]
+    tree.leaves.values[target + i] = tree.leaves.values[start + i]
+  }
+
+  // tree.leaves.bounds.copyWithin(base + elem_idx + space_wanted, base + elem_idx, base + TC.LEAF_CHILDREN - space_wanted)
+  // tree.leaves.values.copyWithin(base + elem_idx + space_wanted, base + elem_idx, base + TC.LEAF_CHILDREN - space_wanted)
 
   return [leaf_idx, elem_idx]
 }
@@ -884,8 +896,9 @@ function extend_upper_range<V>(tree: IndexTreeInner<V>, leaf_idx: LeafIdx, elem_
     tree.leaves.next_leaves[leaf_idx] = new_next_leaf;
   }
 }
-
+; (globalThis as any).set_range_cnt = 0
 export function itSetRange<V>(tree: IndexTreeInner<V>, start: number, end: number, data: V): void {
+  ; (globalThis as any).set_range_cnt++
   if (start === end) return;
   const cursor = cursor_at(tree, start);
 
@@ -904,8 +917,9 @@ export function itSetRange<V>(tree: IndexTreeInner<V>, start: number, end: numbe
   tree.cursor_key = end;
 }
 
-
+; (globalThis as any).set_range_internal_cnt = 0
 function set_range_internal<V>(tree: IndexTreeInner<V>, cursor: IndexCursor, start: number, end: number, data: V): [IndexCursor, boolean] {
+  ;(globalThis as any).set_range_internal_cnt++
   let { leaf_idx, elem_idx } = cursor
 
   let leaves = tree.leaves

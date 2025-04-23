@@ -1030,30 +1030,6 @@ function cursor_at_start_nothing_emplaced<V>(tree: ContentTreeInner<V>): Content
   }
 }
 
-/// This function blindly assumes the item is definitely in the recursive children.
-///
-/// Returns (child index, relative end pos of the index, len remaining).
-function find_cur_pos_in_node(tree: ContentTreeInner<any>, idx: NodeIdx, at_cur_pos: number): [number, number, number] {
-  let end_pos_offset = 0
-
-  let base = idx * TC.NODE_CHILDREN
-  let width_base = idx * TC.NODE_CHILDREN * 2
-  for (let i = 0; i < TC.NODE_CHILDREN; i++) {
-    // let width = node.child_width[i];
-    let width_cur = tree.node_child_width[width_base + i * 2 + 0]
-    let width_end = tree.node_child_width[width_base + i * 2 + 1]
-
-    if (at_cur_pos < width_cur) {
-      return [tree.node_child_indexes[base + i], end_pos_offset, at_cur_pos]
-    }
-
-    at_cur_pos -= width_cur
-    end_pos_offset += width_end
-  }
-
-  throw Error("Position not in node")
-}
-
 /// Returns (index, end_pos, offset).
 function find_cur_pos_in_leaf(tree: ContentTreeInner<any>, idx: LeafIdx, at_cur_pos: number): [number, number, number] {
   let end_pos = 0;
@@ -1153,13 +1129,25 @@ export function ct_cursor_before_cur_pos<V>(tree: ContentTreeInner<V>, content_p
   let content_pos_remaining = content_pos
 
   // Descend through the tree to find the right position
-  for (let _h = 0; _h < tree.height; _h++) {
-    // TODO: This function is only used from this one place. Given it returns a tuple,
-    // consider inlining it to avoid the allocation.
-    let [child_idx, rel_end_pos, cpr] = find_cur_pos_in_node(tree, idx, content_pos_remaining)
-    end_pos += rel_end_pos
-    content_pos_remaining = cpr
-    idx = child_idx
+  outer: for (let _h = 0; _h < tree.height; _h++) {
+    // This call has been inlined to avoid the tuple creation & extraction.
+    let base = idx * TC.NODE_CHILDREN
+    let width_base = idx * TC.NODE_CHILDREN * 2
+    for (let i = 0; i < TC.NODE_CHILDREN; i++) {
+      // let width = node.child_width[i];
+      let width_cur = tree.node_child_width[width_base + i * 2 + 0]
+      let width_end = tree.node_child_width[width_base + i * 2 + 1]
+
+      if (content_pos_remaining < width_cur) {
+        idx = tree.node_child_indexes[base + i]
+        continue outer
+      }
+
+      content_pos_remaining -= width_cur
+      end_pos += width_end
+    }
+
+    throw Error("Position not in node")
   }
 
   // Now find the position within the leaf

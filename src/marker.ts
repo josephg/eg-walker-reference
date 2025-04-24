@@ -1,27 +1,28 @@
 import { ITContent, MAX_BOUND } from "./index-tree.js";
+import { OpTag } from "./index.js";
 import { LeafIdx, LV } from "./tree-common.js";
 
 export type Marker = {
-  type: 'ins',
+  type: OpTag.Insert,
   leaf: LeafIdx // The content tree leaf which contains this marker item.
 } | {
   // Delete markers describe the target of delete operations. The target is always
   // an inserted item.
-  type: 'del',
+  type: OpTag.Delete,
   target: LV,
   fwd: boolean, // Is this "forwards" (as in, 1,2,3). If false, we're backwards (3,2,1).
 }
 
 const DEFAULT_MARKER: Marker = Object.freeze<Marker>({
-  type: "ins",
+  type: OpTag.Insert,
   leaf: MAX_BOUND,
 })
 
 export const MARKER_FUNCS: ITContent<Marker> = {
   tryAppend(a, offset, b, other_len): boolean {
-    if (a.type === 'ins' && b.type === 'ins') {
+    if (a.type === OpTag.Insert && b.type === OpTag.Insert) {
       return a.leaf === b.leaf
-    } else if (a.type === 'del' && b.type === 'del') {
+    } else if (a.type === OpTag.Delete && b.type === OpTag.Delete) {
       // This is quite complex, but it should be correct. This code was lifted
       // more or less directly from diamond types.
 
@@ -54,9 +55,9 @@ export const MARKER_FUNCS: ITContent<Marker> = {
   },
 
   atOffset(val, offset) {
-    if (val.type === 'ins') return val
+    if (val.type === OpTag.Insert) return val
     else return {
-      type: 'del',
+      type: OpTag.Delete,
       target: val.target + (val.fwd ? offset : -offset),
       fwd: val.fwd
     }

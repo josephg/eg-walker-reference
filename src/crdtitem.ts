@@ -3,6 +3,7 @@ import { LV } from "./tree-common.js"
 
 // This is a bit gross, but we need some region of placeholder LVs.
 export const PLACEHOLDER_START: LV = Math.floor(Number.MAX_SAFE_INTEGER / 4)
+// export const PLACEHOLDER_START: LV = Math.floor(0x40000000)
 
 export enum ItemState {
   NotYetInserted = -1,

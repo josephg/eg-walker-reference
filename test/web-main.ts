@@ -1,7 +1,7 @@
 import * as causalGraph from "../src/causal-graph.js"
 import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { ListOp, ListOpLog, checkoutSimpleString, checkoutSimulated, createOpLog, opLen, pushRemoteOp } from '../src/index.js';
+import { ListOp, ListOpLog, OpTag, checkoutSimpleString, checkoutSimulated, createOpLog, opLen, pushRemoteOp } from '../src/index.js';
 import { assertEq } from "../src/utils.js";
 import * as testData from '../testdata/C1.json'
 
@@ -37,8 +37,8 @@ function importDTOpLog(data: DTExport): ListOpLog {
       if ((delHere > 0) === (insContent !== '')) throw Error('Operation must be an insert or delete')
 
       const op: ListOp = delHere > 0
-        ? {type: 'del', pos, len: delHere}
-        : {type: 'ins', pos, content: [...insContent]}
+        ? {type: OpTag.Delete, pos, len: delHere}
+        : {type: OpTag.Insert, pos, content: [...insContent]}
 
       const actualLv = oplog.cg.nextLV()
       assertEq(expectLV, actualLv)
@@ -60,12 +60,16 @@ function importDTOpLog(data: DTExport): ListOpLog {
   return oplog
 }
 
-const oplog = importDTOpLog(testData.default as DTExport)
-console.log('ok')
-console.time('checkout')
-console.profile('checkout')
-// checkoutSimpleString(oplog)
-for (let i = 0; i < 10; i++) checkoutSimulated(oplog)
-console.profileEnd('checkout')
-console.timeEnd('checkout')
-console.log('done!')
+function runBench() {
+  const oplog = importDTOpLog(testData.default as DTExport)
+  checkoutSimulated(oplog)
+  console.log('ok')
+  console.time('checkout')
+  // console.profile('checkout')
+  // checkoutSimpleString(oplog)
+  for (let i = 0; i < 10; i++) checkoutSimulated(oplog)
+  // console.profileEnd('checkout')
+  console.timeEnd('checkout')
+  console.log('done!')
+}
+runBench()

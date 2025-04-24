@@ -551,7 +551,7 @@ export const summarizeVersion = (cg: CausalGraphInner): VersionSummary => {
   return result
 }
 
-const eachVersionBetween = (cg: CausalGraphInner, vStart: LV, vEnd: LV, visit: (e: CGEntry, vs: number, ve: number) => void) => {
+export function eachVersionBetween(cg: CausalGraphInner, vStart: LV, vEnd: LV, visit: (e: CGEntry, vs: number, ve: number) => void) {
   let idx = bs(cg.entries, vStart, (entry, needle) => (
     needle < entry.version ? 1
     : needle >= entry.vEnd ? -1

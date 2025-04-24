@@ -15,6 +15,7 @@ import {
 declare const DEBUG: boolean
 
 export const MAX_BOUND = Number.MAX_SAFE_INTEGER
+// export const MAX_BOUND = 0x7fffffff
 
 export class IndexTree<V> {
   inner: IndexTreeInner<V>

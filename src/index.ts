@@ -15,7 +15,7 @@
 //
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
-import { CausalGraph, diff2, DiffFlag, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
+import { CausalGraph, CGEntry, diff2, DiffFlag, eachVersionBetween, Id, intersectWithSummary, LV, LVRange } from './causal-graph.js'
 import { cloneCursor, ContentCursor, ContentTree, ct_iter, ct_iter_rle, ctCreate } from './content-tree.js'
 import { CRDTItem, createPlaceholderItem, ITEM_FUNCS, itemLen, ItemState, itemTakesUpCurSpace, itemTakesUpEndSpace } from './crdtitem.js'
 import { IndexTree, itCountItems, MAX_BOUND } from './index-tree.js'
@@ -23,6 +23,10 @@ import { Marker, MARKER_FUNCS } from './marker.js'
 import { LeafIdx } from './tree-common.js'
 import {assert, assertEq, assertNe, max2, min2, pushRLEList} from './utils.js'
 import bs from 'binary-search'
+
+export const enum OpTag {
+  Insert, Delete
+}
 
 /**
  * Operations either insert new content at some position (index), or delete the item
@@ -35,11 +39,11 @@ import bs from 'binary-search'
  * implementation, the ID and parents are stored separately - in the causal graph.
 */
 export type ListOp<T = any> = {
-  type: 'ins',
+  type: OpTag.Insert,
   pos: number
   content: T[], // TODO: Move this to a master "inserted content" array in ListOpLog.
 } | {
-  type: 'del',
+  type: OpTag.Delete,
   pos: number,
   len: number, // Number of deleted items.
   // TODO: Fwd / backward.
@@ -65,7 +69,7 @@ export function createOpLog<T = any>(): ListOpLog<T> {
 }
 
 export const opLen = (op: ListOp<any>): number => (
-  op.type === 'ins'
+  op.type === OpTag.Insert
     ? op.content.length
     : op.len
 )
@@ -112,7 +116,7 @@ function* oplogIterRange<T>(oplog: ListOpLog<T>, start: LV, end: LV): Generator<
 
       op2.version += sliceStart
 
-      if (op2.type === 'del') {
+      if (op2.type === OpTag.Delete) {
         op2.len = sliceEnd - sliceStart
       } else {
         op2.pos += sliceStart
@@ -139,7 +143,7 @@ function dbgCheckOplog<T>(oplog: ListOpLog<T>) {
 }
 
 function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
-  if (a.type === 'ins' && b.type === 'ins') {
+  if (a.type === OpTag.Insert && b.type === OpTag.Insert) {
     let len = a.content.length
     // Checking the version probably isn't relevant here because of how I'm using this function.
     // But its still good practice, I think. Dunno how this function will be used later.
@@ -147,7 +151,7 @@ function tryMergeOpWithV<T>(a: OpWithVersion<T>, b: OpWithVersion<T>): boolean {
       a.content.push(...b.content)
       return true
     }
-  } else if (a.type === 'del' && b.type === 'del') {
+  } else if (a.type === OpTag.Delete && b.type === OpTag.Delete) {
     // TODO: Also add backspace optimisation.
     if (a.pos === b.pos && a.version + a.len === b.version) {
       a.len += b.len
@@ -164,7 +168,7 @@ export function localInsert<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
   // add returns the number of items missing from oplog.cg.
   let lenAdded = oplog.cg.add(agent, seq, seq + content.length)
   assertEq(lenAdded, content.length)
-  pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'ins', pos, content, version })
+  pushRLEList(tryMergeOpWithV, oplog.ops, { type: OpTag.Insert, pos, content, version })
 }
 
 export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number = 1) {
@@ -175,7 +179,7 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
 
   let lenAdded = oplog.cg.add(agent, seq, seq+len)
   assertEq(lenAdded, len)
-  pushRLEList(tryMergeOpWithV, oplog.ops, { type: 'del', pos, len, version })
+  pushRLEList(tryMergeOpWithV, oplog.ops, { type: OpTag.Delete, pos, len, version })
 }
 
 /**
@@ -194,12 +198,12 @@ export function pushRemoteOp<T>(oplog: ListOpLog<T>, id: Id, parents: Id[], op: 
   let lenAdded = oplog.cg.addRemote(id, len, parents)
   if (lenAdded === 0) return 0 // We already have this operation.
 
-  // if (type === 'ins' && content === undefined) throw Error('Cannot add an insert operation with no content')
+  // if (type === OpTag.Insert && content === undefined) throw Error('Cannot add an insert operation with no content')
 
   if (len > lenAdded) {
     // Truncate the operation, keeping the tail.
     let sliceAt = len - lenAdded
-    if (op.type === 'del') {
+    if (op.type === OpTag.Delete) {
       op.len -= sliceAt
     } else {
       op.pos += sliceAt
@@ -294,7 +298,7 @@ interface EditContext {
 
 function markerAt(ctx: EditContext, lv: LV): LeafIdx {
   let marker = ctx.index.getEntry(lv).val
-  if (marker.type !== 'ins') throw Error('No marker at lv')
+  if (marker.type !== OpTag.Insert) throw Error('No marker at lv')
   return marker.leaf
 }
 
@@ -330,7 +334,7 @@ function advRetreatRange(ctx: EditContext, lvStart: LV, lvEnd: LV, isAdvance: bo
 
       let targetStart, leaf = MAX_BOUND
 
-      if (marker.type === 'ins') {
+      if (marker.type === OpTag.Insert) {
         leaf = marker.leaf
         assertNe(leaf, MAX_BOUND, 'Item not found in content')
         // We'll just modify from start to end in the inserted item itself.
@@ -388,7 +392,7 @@ function applyRange<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<
 
         if (xfPos >= 0) {
           // Apply the operation to the snapshot.
-          if (op.type === 'ins') {
+          if (op.type === OpTag.Insert) {
             snapshot?.splice(xfPos, 0, ...op.content)
             // console.log('INS', xfPos, op.content, '->', (snapshot as string[]).join(''))
           } else {
@@ -408,7 +412,7 @@ function applyRange<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<
           }
 
           op.version += lenHere
-          if (op.type === 'ins') {
+          if (op.type === OpTag.Insert) {
             // This won't actually happen, because applyXF only splits deletes...
             op.pos += lenHere
             op.content = op.content.slice(lenHere)
@@ -437,7 +441,7 @@ type TransformedPosition = number | -1
 function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agent: string, seq: number): [number, TransformedPosition] {
   let len = opLen(op)
 
-  if (op.type === 'ins') {
+  if (op.type === OpTag.Insert) {
     let originLeft = -1
 
     let curPos = op.pos
@@ -527,7 +531,7 @@ function applyXF(ctx: EditContext, op: OpWithVersion<any>, cg: CausalGraph, agen
 
     let lvStart = op.version
     ctx.index.setRange(lvStart, lvStart + len, {
-      type: 'del',
+      type: OpTag.Delete,
       fwd,
       target: fwd ? targetStart : targetEnd
     })
@@ -705,7 +709,7 @@ function integrate(
 //     }
 
 //     const op = oplog.ops[item.lv]
-//     if (op.type !== 'ins') throw Error('Invalid state') // This avoids a typescript type error.
+//     if (op.type !== OpTag.Insert) throw Error('Invalid state') // This avoids a typescript type error.
 //     const value = item.endState === ItemState.Deleted ? null : op.content
 
 //     let content = `${value == null ? '.' : value} at ${lvToStr(item.lv)} (left ${lvToStr(item.originLeft)})`
@@ -774,14 +778,15 @@ export function createEmptyBranch(): Branch<any> {
   return { snapshot: [], version: [] }
 }
 
-;(globalThis as any).notifyCount = 0
+// ;(globalThis as any).notifyCount = 0
 function createEditContext(curVersion: LV[] = []): EditContext {
   const index = new IndexTree(MARKER_FUNCS)
-  const items = new ContentTree(ITEM_FUNCS, (e, leaf) => {
+  const notify = (e: CRDTItem, leaf: number) => { // Put here just to name it.
     // console.log('notify', e, leaf)
-    index.setRange(e.lvStart, e.lvEnd, {type: 'ins', leaf})
-    ;(globalThis as any).notifyCount++
-  })
+    index.setRange(e.lvStart, e.lvEnd, {type: OpTag.Insert, leaf})
+    // ;(globalThis as any).notifyCount++
+  }
+  const items = new ContentTree(ITEM_FUNCS, notify)
 
   // The items list is initialized with a single placeholder item.
   items.setSingleItem(createPlaceholderItem())
@@ -907,7 +912,7 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
 // --------
 
 // const oplog = createOpLog()
-// pushRemoteOp(oplog, ['a', 0], [], { type: 'ins', pos: 0, content: [0] })
-// pushRemoteOp(oplog, ['b', 0], [], { type: 'ins', pos: 0, content: [1] })
+// pushRemoteOp(oplog, ['a', 0], [], { type: OpTag.Insert, pos: 0, content: [0] })
+// pushRemoteOp(oplog, ['b', 0], [], { type: OpTag.Insert, pos: 0, content: [1] })
 // // console.log('oplog', oplog)
 // console.log(checkoutSimple(oplog))

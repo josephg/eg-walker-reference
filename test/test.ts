@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as causalGraph from "../src/causal-graph.js"
 import type { LV, LVRange } from "../src/causal-graph.js"
 
-import { ListOp, ListOpLog, checkoutSimpleString, createOpLog, opLen, pushRemoteOp } from '../src/index.js';
+import { ListOp, ListOpLog, OpTag, checkoutSimpleString, createOpLog, opLen, pushRemoteOp } from '../src/index.js';
 
 import consoleLib from 'console'
 import { assertEq } from '../src/utils.js';
@@ -56,8 +56,8 @@ function importDTOpLog(data: DTExport): ListOpLog {
       if ((delHere > 0) === (insContent !== '')) throw Error('Operation must be an insert or delete')
 
       const op: ListOp = delHere > 0
-        ? {type: 'del', pos, len: delHere}
-        : {type: 'ins', pos, content: [...insContent]}
+        ? {type: OpTag.Delete, pos, len: delHere}
+        : {type: OpTag.Insert, pos, content: [...insContent]}
 
       const actualLv = oplog.cg.nextLV()
       assertEq(expectLV, actualLv)

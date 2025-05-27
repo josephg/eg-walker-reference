@@ -264,23 +264,24 @@ const findItemIdx = (ctx: EditContext, needle: number): number => {
  * Some history:
  *
  * This algorithm started its life in Yjs, written by Kevin Jahns. I adapted that approach
- * for reference-crdts. Then modified & improved it in place to make YjsMod. Then the
- * algorithm was improved further by Matthew Weidner to make Fugue. The fugue paper
- * proves many nice properties about this algorithm and its interleaving behaviour:
+ * for reference-crdts. Then modified & improved it in place to make YjsMod.
+ * 
+ * Then an almost identical algorithm was invented by Matthew Weidner and Kleppmann and
+ * called Fugue. The fugue paper proves many nice properties about this algorithm - in
+ * particular, it proves that it has excellent interleaving behaviour:
  *
  * https://arxiv.org/abs/2305.00583
- *
- * Finally, I've replaced rightOrigin in fugue-list's items implementation with rightParent.
- * (Calculated before integrate is called). Ordinarily this would result in correct behaviour
- * but pathological performance in the integrate method because rightOrigin is also used in
- * fugue-list to bound the search for insert location. But, here its easy to simply calculate
- * rightBound as items are inserted.
  *
  * Meanwhile, Greg Little and Michael Toomim wrote a separate sequence CRDT algorithm called
  * Sync9. Sync9 predated fugue by a couple of years. It was formulated a different way (using
  * trees), but it turns out the ordering behaviour between sync9 and fugue is identical.
  *
- * Anyway, the long and short of it is: This function implements the Sync9 / Fugue CRDT.
+ * It also turns out that Fugue has one little problem in its interleaving behaviour, which
+ * was fixed by Weidner and named FugueMax. My YjsMod algorithm is (I think) itentical to
+ * FugueMax. And thats what I've implemented here.
+ *
+ * Anyway, the long and short of it is: This function implements the YjsMod / FugueMax CRDT -
+ * which is coincidentally very similar to Toomim & Little's Sync9.
  */
 function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item, cursor: DocCursor) {
   // If there's no concurrency, we don't need to scan.

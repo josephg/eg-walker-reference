@@ -1,10 +1,11 @@
-# Replayable Event Graph (reference implementation)
+# Eg-walker (reference implementation)
 
-This is a simple reference implementation of a Replayable Event Graph: A new approach to collaborative editing.
+This is a simple reference implementation of the event graph walker algorithm: A new approach to collaborative editing in text and sequence data. 
+See [the paper](https://arxiv.org/abs/2409.14252) for details.
 
-This codebase contains a sequence-REG implementation based around the FUGUE sequence CRDT.
+This implementation is based around the yjsmod sequence CRDT. Which is to say, the resulting document order should match yjsmod. We believe this algorithm is isomorphic to FugueMax.
 
-Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), regs store an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
+Conceptually, rather than storing a list of transformed operations (OT), or storing a list of intermediate ordered items (CRDTs), eg-walker stores an append-only, immutable list of *original operations*. This is the list of edits *as they actually happened*, including causal information (*when* each operation happened relative to all other operations.)
 
 In practice, this means operations look like this:
 
@@ -30,42 +31,42 @@ This algorithm was first created in the [diamond types](https://github.com/josep
 ## Usage example
 
 ```javascript
-import * as reg from 'reference-reg'
+import * as egw from 'eg-walker-reference'
 
-const oplog1 = reg.createOpLog()
+const oplog1 = egw.createOpLog()
 
 // Insert 'h', 'i' from user1.
-reg.localInsert(oplog1, 'user1', 0, 'h', 'i')
-console.log(reg.checkoutSimpleString(oplog1)) // 'hi'
+egw.localInsert(oplog1, 'user1', 0, 'h', 'i')
+console.log(egw.checkoutSimpleString(oplog1)) // 'hi'
 
 // Users 1 and 2 concurrently insert A and B at the start of the document
-const oplog2 = reg.createOpLog() // In a new document
+const oplog2 = egw.createOpLog() // In a new document
 
-const v = reg.getLatestVersion(oplog2) // [] in this case.
-reg.pushOp(oplog2, ['user1', 0], v, 'ins', 0, 'A')
-reg.pushOp(oplog2, ['user2', 0], v, 'ins', 0, 'B')
+const v = egw.getLatestVersion(oplog2) // [] in this case.
+egw.pushOp(oplog2, ['user1', 0], v, 'ins', 0, 'A')
+egw.pushOp(oplog2, ['user2', 0], v, 'ins', 0, 'B')
 
 // Prints 'AB' - since fugue tie breaks by ordering by agent ID.
-console.log(reg.checkoutSimpleString(oplog2))
+console.log(egw.checkoutSimpleString(oplog2))
 
 // Now lets simulate the same thing using 2 oplogs.
-const oplogA = reg.createOpLog()
-reg.localInsert(oplogA, 'user1', 0, 'A')
+const oplogA = egw.createOpLog()
+egw.localInsert(oplogA, 'user1', 0, 'A')
 
-const oplogB = reg.createOpLog()
-reg.localInsert(oplogB, 'user2', 0, 'B')
+const oplogB = egw.createOpLog()
+egw.localInsert(oplogB, 'user2', 0, 'B')
 
 // The two users sync changes:
-reg.mergeOplogInto(oplogA, oplogB)
-reg.mergeOplogInto(oplogB, oplogA)
+egw.mergeOplogInto(oplogA, oplogB)
+egw.mergeOplogInto(oplogB, oplogA)
 
 // And now they both see AB.
-console.log(reg.checkoutSimpleString(oplogA)) // Also AB.
-console.log(reg.checkoutSimpleString(oplogB)) // Also AB.
+console.log(egw.checkoutSimpleString(oplogA)) // Also AB.
+console.log(egw.checkoutSimpleString(oplogB)) // Also AB.
 
 // Finally lets make a branch and update it.
-const branch = reg.createEmptyBranch()
-reg.mergeChangesIntoBranch(branch, oplogA)
+const branch = egw.createEmptyBranch()
+egw.mergeChangesIntoBranch(branch, oplogA)
 console.log(branch.snapshot) // ['A', 'B'].
 ```
 
@@ -73,7 +74,7 @@ console.log(branch.snapshot) // ['A', 'B'].
 
 ## Reference implementation
 
-This directory contains a simple implementation of a reg collaborative editing
+This directory contains a simple implementation of an eg-walker collaborative editing
 object for sequences, built on top of Fugue.
 
 The code is split between two files:
